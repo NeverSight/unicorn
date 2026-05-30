@@ -3308,6 +3308,100 @@ static const struct SSEOpHelper_eppi sse_op_table7[256] = {
     [0xdf] = AESNI_OP(aeskeygenassist),
 };
 
+/*
+ * VEX-encoded SSE arithmetic is non-destructive: dst = src1 OP src2, with
+ * src1 = xmm[VEX.vvvv].  The legacy MMX/SSE decoder treats the destination as
+ * the first source (dst = dst OP src2).  For VEX 3-operand forms, preload src1
+ * into the dst slot so the in-place helper computes dst = src1 OP src2; route a
+ * register src2 through xmm_t0 first so an aliased src2 (rm == reg) survives the
+ * preload.  Scalar forms get the correct upper-lane carry-over from src1 for
+ * free, since the whole 128-bit src1 is copied into dst.
+ */
+static void gen_sse_vex_merge_src1(DisasContext *s, int reg, int *op2_offset)
+{
+    int dst_offset = offsetof(CPUX86State, xmm_regs[reg]);
+    int t0_offset = offsetof(CPUX86State, xmm_t0);
+
+    if (*op2_offset != t0_offset) {
+        gen_op_movo(s, t0_offset, *op2_offset);
+        *op2_offset = t0_offset;
+    }
+    gen_op_movo(s, dst_offset, offsetof(CPUX86State, xmm_regs[s->vex_v]));
+}
+
+/* One-byte SSE opcodes (sse_op_table1) whose VEX form takes vvvv as src1.
+ * comiss/ucomiss (2e/2f) read dst as a pure source and pshufd (70) is
+ * 2-operand, so both are excluded; scalar forms (sqrt/cvt) carry src1 into the
+ * upper lanes via the full preload. */
+static bool sse_vex_3op_table1(int b)
+{
+    switch (b) {
+    case 0x14: case 0x15:
+    case 0x51: case 0x52: case 0x53:
+    case 0x54: case 0x55: case 0x56: case 0x57:
+    case 0x58: case 0x59: case 0x5a:
+    case 0x5c: case 0x5d: case 0x5e: case 0x5f:
+    case 0xc2: case 0xc6:
+    case 0x60: case 0x61: case 0x62: case 0x63:
+    case 0x64: case 0x65: case 0x66: case 0x67:
+    case 0x68: case 0x69: case 0x6a: case 0x6b:
+    case 0x6c: case 0x6d:
+    case 0x74: case 0x75: case 0x76:
+    case 0x7c: case 0x7d:
+    case 0xd0:
+    case 0xd1: case 0xd2: case 0xd3: case 0xd4: case 0xd5:
+    case 0xd8: case 0xd9: case 0xda: case 0xdb:
+    case 0xdc: case 0xdd: case 0xde: case 0xdf:
+    case 0xe0: case 0xe1: case 0xe2: case 0xe3: case 0xe4: case 0xe5:
+    case 0xe8: case 0xe9: case 0xea: case 0xeb:
+    case 0xec: case 0xed: case 0xee: case 0xef:
+    case 0xf1: case 0xf2: case 0xf3: case 0xf4: case 0xf5: case 0xf6:
+    case 0xf8: case 0xf9: case 0xfa: case 0xfb:
+    case 0xfc: case 0xfd: case 0xfe:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* 0f38 opcodes (sse_op_table6) whose VEX form takes vvvv as src1.  Unary ops
+ * (pabs/pmovsx/zx/phminposuw/aesimc) ignore the dst input, ptest (17) reads it
+ * as a source, and blendv (10/14/15) is a 4-operand VEX form decoded
+ * elsewhere, so none of those merge. */
+static bool sse_vex_3op_table6(int b)
+{
+    switch (b) {
+    case 0x00:
+    case 0x01: case 0x02: case 0x03: case 0x04:
+    case 0x05: case 0x06: case 0x07:
+    case 0x08: case 0x09: case 0x0a: case 0x0b:
+    case 0x28: case 0x29: case 0x2b:
+    case 0x37:
+    case 0x38: case 0x39: case 0x3a: case 0x3b:
+    case 0x3c: case 0x3d: case 0x3e: case 0x3f:
+    case 0x40:
+    case 0xdc: case 0xdd: case 0xde: case 0xdf:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* 0f3a opcodes (sse_op_table7) whose VEX form takes vvvv as src1.  roundps/pd
+ * (08/09) are 2-operand and pcmp*str (60-63) read dst as a source; roundss/sd
+ * (0a/0b) are scalar and carry src1 into the upper lanes. */
+static bool sse_vex_3op_table7(int b)
+{
+    switch (b) {
+    case 0x0a: case 0x0b:
+    case 0x0c: case 0x0d: case 0x0e: case 0x0f:
+    case 0x40: case 0x41: case 0x42: case 0x44:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     target_ulong pc_start, int rex_r)
 {
@@ -3982,6 +4076,66 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 goto unknown_op;
             }
 
+            /* VEX element broadcasts (no SSE equivalent, hence absent from the
+               op table): replicate src element 0 across every dst lane. */
+            if ((s->prefix & PREFIX_VEX) && b1) {
+                int bsz = 0;
+                switch (b) {
+                case 0x18: case 0x58: bsz = 4; break; /* vbroadcastss/vpbroadcastd */
+                case 0x59:            bsz = 8; break; /* vpbroadcastq */
+                case 0x78:            bsz = 1; break; /* vpbroadcastb */
+                case 0x79:            bsz = 2; break; /* vpbroadcastw */
+                }
+                if (bsz) {
+                    int doff = offsetof(CPUX86State, xmm_regs[reg]);
+                    int soff = offsetof(CPUX86State, xmm_regs[rm | REX_B(s)]);
+                    if (mod != 3)
+                        gen_lea_modrm(env, s, modrm);
+                    if (bsz == 8) {
+                        if (mod == 3)
+                            tcg_gen_ld_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                                           soff + offsetof(ZMMReg, ZMM_Q(0)));
+                        else
+                            tcg_gen_qemu_ld_i64(tcg_ctx, s->tmp1_i64, s->A0,
+                                                s->mem_index, MO_LEQ);
+                        for (int i = 0; i < 2; i++)
+                            tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                                           doff + offsetof(ZMMReg, ZMM_Q(i)));
+                    } else if (bsz == 4) {
+                        if (mod == 3)
+                            tcg_gen_ld_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                                           soff + offsetof(ZMMReg, ZMM_L(0)));
+                        else
+                            tcg_gen_qemu_ld_i32(tcg_ctx, s->tmp2_i32, s->A0,
+                                                s->mem_index, MO_LEUL);
+                        for (int i = 0; i < 4; i++)
+                            tcg_gen_st_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                                           doff + offsetof(ZMMReg, ZMM_L(i)));
+                    } else if (bsz == 2) {
+                        if (mod == 3)
+                            tcg_gen_ld16u_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                             soff + offsetof(ZMMReg, ZMM_W(0)));
+                        else
+                            tcg_gen_qemu_ld_tl(tcg_ctx, s->tmp0, s->A0,
+                                               s->mem_index, MO_LEUW);
+                        for (int i = 0; i < 8; i++)
+                            tcg_gen_st16_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                            doff + offsetof(ZMMReg, ZMM_W(i)));
+                    } else {
+                        if (mod == 3)
+                            tcg_gen_ld8u_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                            soff + offsetof(ZMMReg, ZMM_B(0)));
+                        else
+                            tcg_gen_qemu_ld_tl(tcg_ctx, s->tmp0, s->A0,
+                                               s->mem_index, MO_UB);
+                        for (int i = 0; i < 16; i++)
+                            tcg_gen_st8_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                           doff + offsetof(ZMMReg, ZMM_B(i)));
+                    }
+                    break;
+                }
+            }
+
             sse_fn_epp = sse_op_table6[b].op[b1];
             if (!sse_fn_epp) {
                 goto unknown_op;
@@ -4037,6 +4191,9 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 goto unknown_op;
             }
 
+            if ((s->prefix & PREFIX_VEX) && b1 && sse_vex_3op_table6(b)) {
+                gen_sse_vex_merge_src1(s, reg, &op2_offset);
+            }
             tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
             tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
             sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
@@ -4412,6 +4569,108 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 goto unknown_op;
             }
 
+            /* VEX AVX2 vpblendd (no SSE equivalent): per-dword immediate blend,
+               non-destructive (dst, src1=vvvv, src2, imm). */
+            if ((s->prefix & PREFIX_VEX) && b1 && b == 0x02) {
+                int doff = offsetof(CPUX86State, xmm_regs[reg]);
+                int s1off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+                int s2off;
+                if (mod == 3) {
+                    s2off = offsetof(CPUX86State, xmm_regs[rm | REX_B(s)]);
+                } else {
+                    s->rip_offset = 1;
+                    gen_lea_modrm(env, s, modrm);
+                    gen_ldo_env_A0(s, offsetof(CPUX86State, xmm_t0));
+                    s2off = offsetof(CPUX86State, xmm_t0);
+                }
+                val = x86_ldub_code(env, s);
+                for (int i = 0; i < 4; i++) {
+                    int from = (val & (1 << i)) ? s2off : s1off;
+                    tcg_gen_ld_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                                   from + offsetof(ZMMReg, ZMM_L(i)));
+                    tcg_gen_st_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                                   doff + offsetof(ZMMReg, ZMM_L(i)));
+                }
+                break;
+            }
+
+            /* VEX variable blend vblendvps/vblendvpd/vpblendvb (4-operand: the
+               mask register is in the is4 immediate's high nibble; each lane
+               takes src2 when its mask lane's sign bit is set, else src1). */
+            if ((s->prefix & PREFIX_VEX) && b1 &&
+                (b == 0x4a || b == 0x4b || b == 0x4c)) {
+                int esz = (b == 0x4a) ? 4 : (b == 0x4b) ? 8 : 1;
+                int doff = offsetof(CPUX86State, xmm_regs[reg]);
+                int s1off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+                int s2off;
+                if (mod == 3) {
+                    s2off = offsetof(CPUX86State, xmm_regs[rm | REX_B(s)]);
+                } else {
+                    s->rip_offset = 1;
+                    gen_lea_modrm(env, s, modrm);
+                    gen_ldo_env_A0(s, offsetof(CPUX86State, xmm_t0));
+                    s2off = offsetof(CPUX86State, xmm_t0);
+                }
+                val = x86_ldub_code(env, s);
+                int moff = offsetof(CPUX86State, xmm_regs[(val >> 4) & 15]);
+                if (esz == 8) {
+                    TCGv_i64 m = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 a = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 bv = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 z = tcg_const_i64(tcg_ctx, 0);
+                    for (int i = 0; i < 2; i++) {
+                        tcg_gen_ld_i64(tcg_ctx, m, tcg_ctx->cpu_env,
+                                       moff + offsetof(ZMMReg, ZMM_Q(i)));
+                        tcg_gen_ld_i64(tcg_ctx, a, tcg_ctx->cpu_env,
+                                       s1off + offsetof(ZMMReg, ZMM_Q(i)));
+                        tcg_gen_ld_i64(tcg_ctx, bv, tcg_ctx->cpu_env,
+                                       s2off + offsetof(ZMMReg, ZMM_Q(i)));
+                        tcg_gen_movcond_i64(tcg_ctx, TCG_COND_LT, a, m, z, bv, a);
+                        tcg_gen_st_i64(tcg_ctx, a, tcg_ctx->cpu_env,
+                                       doff + offsetof(ZMMReg, ZMM_Q(i)));
+                    }
+                    tcg_temp_free_i64(tcg_ctx, m);
+                    tcg_temp_free_i64(tcg_ctx, a);
+                    tcg_temp_free_i64(tcg_ctx, bv);
+                    tcg_temp_free_i64(tcg_ctx, z);
+                } else {
+                    int nl = 16 / esz;
+                    TCGv_i32 m = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 a = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 bv = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 z = tcg_const_i32(tcg_ctx, 0);
+                    for (int i = 0; i < nl; i++) {
+                        if (esz == 4) {
+                            tcg_gen_ld_i32(tcg_ctx, m, tcg_ctx->cpu_env,
+                                           moff + offsetof(ZMMReg, ZMM_L(i)));
+                            tcg_gen_ld_i32(tcg_ctx, a, tcg_ctx->cpu_env,
+                                           s1off + offsetof(ZMMReg, ZMM_L(i)));
+                            tcg_gen_ld_i32(tcg_ctx, bv, tcg_ctx->cpu_env,
+                                           s2off + offsetof(ZMMReg, ZMM_L(i)));
+                            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LT, a, m, z, bv, a);
+                            tcg_gen_st_i32(tcg_ctx, a, tcg_ctx->cpu_env,
+                                           doff + offsetof(ZMMReg, ZMM_L(i)));
+                        } else {
+                            tcg_gen_ld8u_i32(tcg_ctx, m, tcg_ctx->cpu_env,
+                                             moff + offsetof(ZMMReg, ZMM_B(i)));
+                            tcg_gen_andi_i32(tcg_ctx, m, m, 0x80);
+                            tcg_gen_ld8u_i32(tcg_ctx, a, tcg_ctx->cpu_env,
+                                             s1off + offsetof(ZMMReg, ZMM_B(i)));
+                            tcg_gen_ld8u_i32(tcg_ctx, bv, tcg_ctx->cpu_env,
+                                             s2off + offsetof(ZMMReg, ZMM_B(i)));
+                            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_NE, a, m, z, bv, a);
+                            tcg_gen_st8_i32(tcg_ctx, a, tcg_ctx->cpu_env,
+                                            doff + offsetof(ZMMReg, ZMM_B(i)));
+                        }
+                    }
+                    tcg_temp_free_i32(tcg_ctx, m);
+                    tcg_temp_free_i32(tcg_ctx, a);
+                    tcg_temp_free_i32(tcg_ctx, bv);
+                    tcg_temp_free_i32(tcg_ctx, z);
+                }
+                break;
+            }
+
             sse_fn_eppi = sse_op_table7[b].op[b1];
             if (!sse_fn_eppi) {
                 goto unknown_op;
@@ -4505,6 +4764,10 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                         tcg_gen_qemu_ld_i32(tcg_ctx, s->tmp2_i32, s->A0,
                                             s->mem_index, MO_LEUL);
                     }
+                    if (s->prefix & PREFIX_VEX) {
+                        gen_op_movo(s, offsetof(CPUX86State, xmm_regs[reg]),
+                                    offsetof(CPUX86State, xmm_regs[s->vex_v]));
+                    }
                     tcg_gen_st_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
                                     offsetof(CPUX86State,xmm_regs[reg]
                                             .ZMM_L((val >> 4) & 3)));
@@ -4586,6 +4849,9 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 }
             }
 
+            if ((s->prefix & PREFIX_VEX) && b1 && sse_vex_3op_table7(b)) {
+                gen_sse_vex_merge_src1(s, reg, &op2_offset);
+            }
             tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
             tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
             sse_fn_eppi(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1, tcg_const_i32(tcg_ctx, val));
@@ -4710,12 +4976,15 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 op2_offset = offsetof(CPUX86State,mmx_t0);
                 gen_ldq_env_A0(s, op2_offset);
             } else {
-                rm = (modrm & 7);
-                op2_offset = offsetof(CPUX86State,fpregs[rm].mmx);
-            }
+            rm = (modrm & 7);
+            op2_offset = offsetof(CPUX86State,fpregs[rm].mmx);
         }
-        switch(b) {
-        case 0x0f: /* 3DNow! data insns */
+    }
+    if ((s->prefix & PREFIX_VEX) && is_xmm && sse_vex_3op_table1(b)) {
+        gen_sse_vex_merge_src1(s, reg, &op2_offset);
+    }
+    switch(b) {
+    case 0x0f: /* 3DNow! data insns */
             val = x86_ldub_code(env, s);
             sse_fn_epp = sse_op_table5[val];
             if (!sse_fn_epp) {
