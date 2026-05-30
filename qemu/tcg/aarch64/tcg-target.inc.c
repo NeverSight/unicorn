@@ -1284,7 +1284,9 @@ static inline void tcg_out_rotl(TCGContext *s, TCGType ext,
 {
     int bits = ext ? 64 : 32;
     int max = bits - 1;
-    tcg_out_extr(s, ext, rd, rn, rn, bits - (m & max));
+    /* rotl(m) == rotr(bits-m); mask so a rotate of 0 emits EXTR #0, not the
+       out-of-range (illegal) EXTR #bits. */
+    tcg_out_extr(s, ext, rd, rn, rn, (bits - (m & max)) & max);
 }
 
 static inline void tcg_out_dep(TCGContext *s, TCGType ext, TCGReg rd,
