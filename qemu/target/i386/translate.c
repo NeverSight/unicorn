@@ -4300,17 +4300,29 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     zero = tcg_const_tl(tcg_ctx, 0);
                     tcg_gen_movcond_tl(tcg_ctx, TCG_COND_LEU, s->T0, s->A0, bound,
                                        s->T0, zero);
-                    tcg_temp_free(tcg_ctx, zero);
 
-                    /* Extract the LEN into a mask.  Lengths larger than
-                       operand size get all ones.  */
+                    /* Extract the LEN into a mask.  Lengths >= the operand size
+                       select all ones (extract everything from START upward).
+                       Clamp LEN to keep the shift well-defined, then restore the
+                       all-ones mask instead of wrongly dropping the top bit. */
                     tcg_gen_extract_tl(tcg_ctx, s->A0, tcg_ctx->cpu_regs[s->vex_v], 8, 8);
-                    tcg_gen_movcond_tl(tcg_ctx, TCG_COND_LEU, s->A0, s->A0, bound,
-                                       s->A0, bound);
+                    {
+                        TCGv lenover = tcg_temp_new(tcg_ctx);
+                        TCGv allones = tcg_const_tl(tcg_ctx, -1);
+                        tcg_gen_setcond_tl(tcg_ctx, TCG_COND_GTU, lenover, s->A0,
+                                           bound);
+                        tcg_gen_movcond_tl(tcg_ctx, TCG_COND_LEU, s->A0, s->A0,
+                                           bound, s->A0, bound);
+                        tcg_gen_movi_tl(tcg_ctx, s->T1, 1);
+                        tcg_gen_shl_tl(tcg_ctx, s->T1, s->T1, s->A0);
+                        tcg_gen_subi_tl(tcg_ctx, s->T1, s->T1, 1);
+                        tcg_gen_movcond_tl(tcg_ctx, TCG_COND_NE, s->T1, lenover,
+                                           zero, allones, s->T1);
+                        tcg_temp_free(tcg_ctx, allones);
+                        tcg_temp_free(tcg_ctx, lenover);
+                    }
                     tcg_temp_free(tcg_ctx, bound);
-                    tcg_gen_movi_tl(tcg_ctx, s->T1, 1);
-                    tcg_gen_shl_tl(tcg_ctx, s->T1, s->T1, s->A0);
-                    tcg_gen_subi_tl(tcg_ctx, s->T1, s->T1, 1);
+                    tcg_temp_free(tcg_ctx, zero);
                     tcg_gen_and_tl(tcg_ctx, s->T0, s->T0, s->T1);
 
                     gen_op_mov_reg_v(s, ot, reg, s->T0);
@@ -4330,17 +4342,30 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 tcg_gen_ext8u_tl(tcg_ctx, s->T1, tcg_ctx->cpu_regs[s->vex_v]);
                 {
                     TCGv bound = tcg_const_tl(tcg_ctx, ot == MO_64 ? 63 : 31);
-                    /* Note that since we're using BMILG (in order to get O
-                       cleared) we need to store the inverse into C.  */
-                    tcg_gen_setcond_tl(tcg_ctx, TCG_COND_LT, tcg_ctx->cpu_cc_src,
+                    TCGv zero = tcg_const_tl(tcg_ctx, 0);
+                    TCGv over = tcg_temp_new(tcg_ctx);
+                    /* BZHI clears bits [OperandSize-1:N] only when N < OperandSize;
+                       when N >= OperandSize it leaves the source unchanged and sets
+                       CF.  Since we use BMILG (to get OF cleared) we store CF's
+                       inverse (N <= bound, i.e. N < OperandSize) into cc_src. */
+                    tcg_gen_setcond_tl(tcg_ctx, TCG_COND_LE, tcg_ctx->cpu_cc_src,
                                        s->T1, bound);
+                    /* over = (N > bound): index reaches/exceeds the operand width. */
+                    tcg_gen_setcond_tl(tcg_ctx, TCG_COND_GT, over, s->T1, bound);
+                    /* Clamp the shift to keep it well-defined, build the high-bit
+                       clear-mask -1<<N, then force it to 0 when N exceeds the width
+                       (clearing nothing) instead of wrongly clearing the top bit. */
                     tcg_gen_movcond_tl(tcg_ctx, TCG_COND_GT, s->T1, s->T1,
                                        bound, bound, s->T1);
+                    tcg_gen_movi_tl(tcg_ctx, s->A0, -1);
+                    tcg_gen_shl_tl(tcg_ctx, s->A0, s->A0, s->T1);
+                    tcg_gen_movcond_tl(tcg_ctx, TCG_COND_NE, s->A0, over, zero,
+                                       zero, s->A0);
+                    tcg_gen_andc_tl(tcg_ctx, s->T0, s->T0, s->A0);
+                    tcg_temp_free(tcg_ctx, over);
+                    tcg_temp_free(tcg_ctx, zero);
                     tcg_temp_free(tcg_ctx, bound);
                 }
-                tcg_gen_movi_tl(tcg_ctx, s->A0, -1);
-                tcg_gen_shl_tl(tcg_ctx, s->A0, s->A0, s->T1);
-                tcg_gen_andc_tl(tcg_ctx, s->T0, s->T0, s->A0);
                 gen_op_mov_reg_v(s, ot, reg, s->T0);
                 gen_op_update1_cc(s);
                 set_cc_op(s, CC_OP_BMILGB + ot);
