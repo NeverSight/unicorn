@@ -4567,6 +4567,17 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     tcg_gen_xor_tl(tcg_ctx, s->T0, s->T0, s->T1);
                     break;
                 case 3: /* blsi By, Ey */
+                    /* BLSI sets CF when the source is NON-zero, the OPPOSITE of
+                       BLSR/BLSMSK.  BMILG yields CF = (cc_src == 0) over the
+                       operand size, so overwrite cc_src (set to the raw source
+                       above) with the inverse indicator (src == 0): then
+                       CF = ((src==0) == 0) = (src != 0), per the Intel SDM. */
+                    {
+                        TCGv blsi_srcz =
+                            gen_ext_tl(tcg_ctx, s->T1, s->T0, ot, false);
+                        tcg_gen_setcondi_tl(tcg_ctx, TCG_COND_EQ,
+                                            tcg_ctx->cpu_cc_src, blsi_srcz, 0);
+                    }
                     tcg_gen_neg_tl(tcg_ctx, s->T1, s->T0);
                     tcg_gen_and_tl(tcg_ctx, s->T0, s->T0, s->T1);
                     break;
