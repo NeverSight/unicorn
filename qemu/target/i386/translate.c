@@ -3699,6 +3699,49 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             }
             return true;
         }
+        /* AVX2 cross-lane dword gather (0f38 16/36): VPERMPS/VPERMD.
+         * dst.L[i] = data.L[idx.L[i] & 7], where idx=vvvv (src1) and
+         * data=rm/mem (src2) -- a full 256-bit gather, not lane-wise.  Read all
+         * 8 data dwords up front so an in-place dst==data/idx gather is safe. */
+        if (sub == 0x16 || sub == 0x36) {
+            int idx_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+            int data_off;
+            TCGv_i32 d[8], idx, res;
+            int i, j;
+            if (mod == 3) {
+                data_off = offsetof(CPUX86State, xmm_regs[rm]);
+            } else {
+                data_off = offsetof(CPUX86State, xmm_t0);
+                gen_lea_modrm(env, s, modrm);
+                gen_ldy_env_A0(s, data_off);
+            }
+            for (i = 0; i < 8; i++) {
+                d[i] = tcg_temp_new_i32(tcg_ctx);
+                tcg_gen_ld_i32(tcg_ctx, d[i], tcg_ctx->cpu_env,
+                               data_off + offsetof(ZMMReg, ZMM_L(i)));
+            }
+            idx = tcg_temp_new_i32(tcg_ctx);
+            res = tcg_temp_new_i32(tcg_ctx);
+            for (i = 0; i < 8; i++) {
+                tcg_gen_ld_i32(tcg_ctx, idx, tcg_ctx->cpu_env,
+                               idx_off + offsetof(ZMMReg, ZMM_L(i)));
+                tcg_gen_andi_i32(tcg_ctx, idx, idx, 7);
+                tcg_gen_mov_i32(tcg_ctx, res, d[0]);
+                for (j = 1; j < 8; j++) {
+                    TCGv_i32 cst = tcg_const_i32(tcg_ctx, j);
+                    tcg_gen_movcond_i32(tcg_ctx, TCG_COND_EQ, res, idx, cst,
+                                        d[j], res);
+                    tcg_temp_free_i32(tcg_ctx, cst);
+                }
+                tcg_gen_st_i32(tcg_ctx, res, tcg_ctx->cpu_env,
+                               op1_offset + offsetof(ZMMReg, ZMM_L(i)));
+            }
+            for (i = 0; i < 8; i++)
+                tcg_temp_free_i32(tcg_ctx, d[i]);
+            tcg_temp_free_i32(tcg_ctx, idx);
+            tcg_temp_free_i32(tcg_ctx, res);
+            return true;
+        }
         /* AVX2 256-bit element broadcast (0f38 18/19/58/59/78/79): replicate
          * src element 0 across every dst lane.  No SSE helper exists. */
         if (sub == 0x18 || sub == 0x19 || sub == 0x58 || sub == 0x59 ||
