@@ -3492,6 +3492,139 @@ static void gen_sse_vex_merge_src1_ymm(DisasContext *s, int reg, int *op2_offset
 }
 
 /*
+ * AVX2 VSIB gather (VPGATHER{DD,DQ,QD,QQ} 0f38 90/91, VGATHER{DPS,DPD,QPS,QPD}
+ * 0f38 92/93).  Handles both VEX.128 and VEX.256.  The memory operand uses a
+ * vector index register (SIB.index), VEX.vvvv is the element mask, and the
+ * destination register doubles as the merge source for masked-off lanes.  QEMU
+ * 5.0.1 has no gather decode at all, so this implements it from scratch:
+ * decode the VSIB byte, then for each element form base + sext(index)*scale +
+ * disp, conditionally load (mask sign bit), and clear the mask on completion.
+ * `modrm` is already read; the SIB byte follows.  Returns false (→ #UD) on an
+ * unexpected operand shape.
+ *
+ * Masked-off lanes are still loaded (no fault suppression); only the gathered
+ * value is gated by movcond.  Compiler-generated gather always has in-bounds
+ * indices on every lane, so this never accesses memory a real gather would skip.
+ */
+static bool gen_vsib_gather(CPUX86State *env, DisasContext *s, int b, int modrm,
+                            int reg)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    int mod = (modrm >> 6) & 3;
+    int rm = modrm & 7;
+
+    /* Gather requires a VSIB memory operand (SIB present, register form is an
+     * invalid encoding) and a 32/64-bit address size. */
+    if (mod == 3 || rm != 4 || s->aflag == MO_16)
+        return false;
+
+    int idx_sz = (b == 0x90 || b == 0x92) ? 4 : 8;
+    int val_sz = (s->dflag == MO_64) ? 8 : 4;
+    int vl = s->vex_l ? 32 : 16;
+    int n = vl / (idx_sz > val_sz ? idx_sz : val_sz);
+
+    int sib = x86_ldub_code(env, s);
+    int scale_sh = (sib >> 6) & 3;
+    int vindex = ((sib >> 3) & 7) | REX_X(s);
+    int base_reg = (sib & 7) | REX_B(s);
+    target_long disp = 0;
+    bool have_base = true;
+    int def_seg = R_DS;
+    if (mod == 0) {
+        if ((base_reg & 7) == 5) { /* no base: disp32 only (VSIB has no RIP) */
+            have_base = false;
+            disp = (int32_t)x86_ldl_code(env, s);
+        }
+    } else if (mod == 1) {
+        disp = (int8_t)x86_ldub_code(env, s);
+    } else {
+        disp = (int32_t)x86_ldl_code(env, s);
+    }
+    if (have_base && (base_reg == R_EBP || base_reg == R_ESP))
+        def_seg = R_SS;
+
+    int dst_off = offsetof(CPUX86State, xmm_regs[reg]);
+    int idx_off = offsetof(CPUX86State, xmm_regs[vindex]);
+    int mask_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+
+    TCGv base_disp = tcg_temp_new(tcg_ctx);
+    if (have_base)
+        tcg_gen_mov_tl(tcg_ctx, base_disp, tcg_ctx->cpu_regs[base_reg]);
+    else
+        tcg_gen_movi_tl(tcg_ctx, base_disp, 0);
+    if (disp)
+        tcg_gen_addi_tl(tcg_ctx, base_disp, base_disp, disp);
+
+    TCGv off = tcg_temp_new(tcg_ctx);
+    TCGv idxv = tcg_temp_new(tcg_ctx);
+    for (int i = 0; i < n; i++) {
+        if (idx_sz == 4)
+            tcg_gen_ld32s_tl(tcg_ctx, idxv, tcg_ctx->cpu_env,
+                             idx_off + offsetof(ZMMReg, ZMM_L(i)));
+        else
+            tcg_gen_ld_tl(tcg_ctx, idxv, tcg_ctx->cpu_env,
+                          idx_off + offsetof(ZMMReg, ZMM_Q(i)));
+        if (scale_sh)
+            tcg_gen_shli_tl(tcg_ctx, idxv, idxv, scale_sh);
+        tcg_gen_add_tl(tcg_ctx, off, base_disp, idxv);
+        gen_lea_v_seg(s, s->aflag, off, def_seg, s->override);
+        if (val_sz == 4) {
+            TCGv_i32 loaded = tcg_temp_new_i32(tcg_ctx);
+            TCGv_i32 cur = tcg_temp_new_i32(tcg_ctx);
+            TCGv_i32 msk = tcg_temp_new_i32(tcg_ctx);
+            TCGv_i32 zero = tcg_const_i32(tcg_ctx, 0);
+            tcg_gen_qemu_ld_i32(tcg_ctx, loaded, s->A0, s->mem_index, MO_LEUL);
+            tcg_gen_ld_i32(tcg_ctx, cur, tcg_ctx->cpu_env,
+                           dst_off + offsetof(ZMMReg, ZMM_L(i)));
+            tcg_gen_ld_i32(tcg_ctx, msk, tcg_ctx->cpu_env,
+                           mask_off + offsetof(ZMMReg, ZMM_L(i)));
+            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LT, loaded, msk, zero,
+                                loaded, cur);
+            tcg_gen_st_i32(tcg_ctx, loaded, tcg_ctx->cpu_env,
+                           dst_off + offsetof(ZMMReg, ZMM_L(i)));
+            tcg_temp_free_i32(tcg_ctx, loaded);
+            tcg_temp_free_i32(tcg_ctx, cur);
+            tcg_temp_free_i32(tcg_ctx, msk);
+            tcg_temp_free_i32(tcg_ctx, zero);
+        } else {
+            TCGv_i64 loaded = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 cur = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 msk = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 zero = tcg_const_i64(tcg_ctx, 0);
+            tcg_gen_qemu_ld_i64(tcg_ctx, loaded, s->A0, s->mem_index, MO_LEQ);
+            tcg_gen_ld_i64(tcg_ctx, cur, tcg_ctx->cpu_env,
+                           dst_off + offsetof(ZMMReg, ZMM_Q(i)));
+            tcg_gen_ld_i64(tcg_ctx, msk, tcg_ctx->cpu_env,
+                           mask_off + offsetof(ZMMReg, ZMM_Q(i)));
+            tcg_gen_movcond_i64(tcg_ctx, TCG_COND_LT, loaded, msk, zero,
+                                loaded, cur);
+            tcg_gen_st_i64(tcg_ctx, loaded, tcg_ctx->cpu_env,
+                           dst_off + offsetof(ZMMReg, ZMM_Q(i)));
+            tcg_temp_free_i64(tcg_ctx, loaded);
+            tcg_temp_free_i64(tcg_ctx, cur);
+            tcg_temp_free_i64(tcg_ctx, msk);
+            tcg_temp_free_i64(tcg_ctx, zero);
+        }
+    }
+    tcg_temp_free(tcg_ctx, base_disp);
+    tcg_temp_free(tcg_ctx, off);
+    tcg_temp_free(tcg_ctx, idxv);
+
+    /* Zero the destination above the gathered elements: the unused low-lane
+     * qwords of a narrowing (QD) gather and the YMM high lane for any sub-256
+     * result. */
+    tcg_gen_movi_i64(tcg_ctx, s->tmp1_i64, 0);
+    for (int q = (n * val_sz) / 8; q < 4; q++)
+        tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                       dst_off + offsetof(ZMMReg, ZMM_Q(q)));
+    /* The whole mask register is cleared on completion. */
+    for (int q = 0; q < 4; q++)
+        tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                       mask_off + offsetof(ZMMReg, ZMM_Q(q)));
+    return true;
+}
+
+/*
  * 256-bit (VEX.L=1, YMM) AVX/AVX2 decode.  QEMU 5.0.1's SSE decoder rejects
  * every VEX.256 encoding outright; this handles the YMM forms by reusing the
  * existing 128-bit helpers once per 128-bit lane (almost all AVX2 packed ops
@@ -3618,6 +3751,9 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
     }
 
     if (b == 0x38) {
+        /* AVX2 256-bit VSIB gather (0f38 90-93). */
+        if (sub >= 0x90 && sub <= 0x93)
+            return gen_vsib_gather(env, s, sub, modrm, reg);
         /* AVX2 per-element variable shift (0f38 45/46/47): dst[i] = src1[i]
          * SHIFT src2[i].  No 128-bit helper exists, so shift each lane inline.
          * x86 does not mask the count -- an out-of-range count yields 0
@@ -4467,6 +4603,15 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
             if (is_xmm) {
                 rm = (modrm & 7) | REX_B(s);
                 op2_offset = offsetof(CPUX86State,xmm_regs[rm]);
+                /* VEX is 3-operand NDD: dst=vvvv, src=rm (the helper shifts in
+                   place, so copy src into dst first).  Legacy SSE is 2-operand
+                   in place on rm. */
+                if (s->prefix & PREFIX_VEX) {
+                    int dst_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+                    if (dst_off != op2_offset)
+                        gen_op_movo(s, dst_off, op2_offset);
+                    op2_offset = dst_off;
+                }
             } else {
                 rm = (modrm & 7);
                 op2_offset = offsetof(CPUX86State,fpregs[rm].mmx);
@@ -4474,6 +4619,8 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
             tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op2_offset);
             tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op1_offset);
             sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+            if (is_xmm && (s->prefix & PREFIX_VEX))
+                gen_clear_ymmh(s, s->vex_v); /* VEX.128 zeroes dst[255:128] */
             break;
         case 0x050: /* movmskps */
             rm = (modrm & 7) | REX_B(s);
@@ -4691,6 +4838,96 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
             mod = (modrm >> 6) & 3;
             if (b1 >= 2) {
                 goto unknown_op;
+            }
+
+            /* AVX2 VSIB gather (0f38 90-93), VEX.128 form. */
+            if ((s->prefix & PREFIX_VEX) && b1 == 1 && b >= 0x90 && b <= 0x93) {
+                if (gen_vsib_gather(env, s, b, modrm, reg))
+                    break;
+                goto illegal_op;
+            }
+
+            /* AVX2 per-element variable shift (0f38 45/46/47), VEX.128 form:
+               dst[i] = src1[i] SHIFT src2[i] (src1=vvvv, src2=rm/mem).  x86
+               does not mask the count -- out-of-range yields 0 (logical) or a
+               sign fill (arithmetic).  VEX.W picks the 64-bit (q) form. */
+            if ((s->prefix & PREFIX_VEX) && b1 == 1 &&
+                (b == 0x45 || b == 0x46 || b == 0x47)) {
+                int src_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+                int dst_off = offsetof(CPUX86State, xmm_regs[reg]);
+                int cnt_off;
+                bool is_q = (s->dflag == MO_64);
+                bool arith = (b == 0x46);
+                bool left = (b == 0x47);
+                if (mod == 3) {
+                    cnt_off = offsetof(CPUX86State, xmm_regs[rm | REX_B(s)]);
+                } else {
+                    cnt_off = offsetof(CPUX86State, xmm_t0);
+                    gen_lea_modrm(env, s, modrm);
+                    gen_ldo_env_A0(s, cnt_off);
+                }
+                if (is_q) {
+                    TCGv_i64 v = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 c = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 r = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 zero = tcg_const_i64(tcg_ctx, 0);
+                    TCGv_i64 lim = tcg_const_i64(tcg_ctx, 64);
+                    for (int i = 0; i < 2; i++) {
+                        tcg_gen_ld_i64(tcg_ctx, v, tcg_ctx->cpu_env,
+                                       src_off + offsetof(ZMMReg, ZMM_Q(i)));
+                        tcg_gen_ld_i64(tcg_ctx, c, tcg_ctx->cpu_env,
+                                       cnt_off + offsetof(ZMMReg, ZMM_Q(i)));
+                        if (left)
+                            tcg_gen_shl_i64(tcg_ctx, r, v, c);
+                        else
+                            tcg_gen_shr_i64(tcg_ctx, r, v, c);
+                        tcg_gen_movcond_i64(tcg_ctx, TCG_COND_LTU, r, c, lim,
+                                            r, zero);
+                        tcg_gen_st_i64(tcg_ctx, r, tcg_ctx->cpu_env,
+                                       dst_off + offsetof(ZMMReg, ZMM_Q(i)));
+                    }
+                    tcg_temp_free_i64(tcg_ctx, v);
+                    tcg_temp_free_i64(tcg_ctx, c);
+                    tcg_temp_free_i64(tcg_ctx, r);
+                    tcg_temp_free_i64(tcg_ctx, zero);
+                    tcg_temp_free_i64(tcg_ctx, lim);
+                } else {
+                    TCGv_i32 v = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 c = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 r = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 zero = tcg_const_i32(tcg_ctx, 0);
+                    TCGv_i32 lim = tcg_const_i32(tcg_ctx, 32);
+                    TCGv_i32 maxsh = tcg_const_i32(tcg_ctx, 31);
+                    for (int i = 0; i < 4; i++) {
+                        tcg_gen_ld_i32(tcg_ctx, v, tcg_ctx->cpu_env,
+                                       src_off + offsetof(ZMMReg, ZMM_L(i)));
+                        tcg_gen_ld_i32(tcg_ctx, c, tcg_ctx->cpu_env,
+                                       cnt_off + offsetof(ZMMReg, ZMM_L(i)));
+                        if (arith) {
+                            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LTU, c, c, lim,
+                                                c, maxsh);
+                            tcg_gen_sar_i32(tcg_ctx, r, v, c);
+                        } else if (left) {
+                            tcg_gen_shl_i32(tcg_ctx, r, v, c);
+                            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LTU, r, c, lim,
+                                                r, zero);
+                        } else {
+                            tcg_gen_shr_i32(tcg_ctx, r, v, c);
+                            tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LTU, r, c, lim,
+                                                r, zero);
+                        }
+                        tcg_gen_st_i32(tcg_ctx, r, tcg_ctx->cpu_env,
+                                       dst_off + offsetof(ZMMReg, ZMM_L(i)));
+                    }
+                    tcg_temp_free_i32(tcg_ctx, v);
+                    tcg_temp_free_i32(tcg_ctx, c);
+                    tcg_temp_free_i32(tcg_ctx, r);
+                    tcg_temp_free_i32(tcg_ctx, zero);
+                    tcg_temp_free_i32(tcg_ctx, lim);
+                    tcg_temp_free_i32(tcg_ctx, maxsh);
+                }
+                gen_clear_ymmh(s, reg); /* VEX.128 zeroes dst[255:128] */
+                break;
             }
 
             /* VEX element broadcasts (no SSE equivalent, hence absent from the
