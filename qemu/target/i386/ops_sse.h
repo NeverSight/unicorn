@@ -627,6 +627,58 @@ SSE_HELPER_S(min, FPU_MIN)
 SSE_HELPER_S(max, FPU_MAX)
 SSE_HELPER_S(sqrt, FPU_SQRT)
 
+/* FMA3 fused multiply-add: d = round(a*b (+/-) c) with a SINGLE rounding.  The
+ * decoder permutes the three sources into multiply/add order (a,b,c) per the
+ * 132/213/231 form and passes a variant code (0 madd, 1 msub, 2 nmadd, 3 nmsub)
+ * which selects the product/addend negations below.  d is the FMA dst operand,
+ * which is also one of a/b/c; each lane is read before it is written, so the
+ * in-place update is safe even when d aliases a source. */
+static inline int fma_variant_flags(int v)
+{
+    int f = 0;
+    if (v & 1) {                /* msub / nmsub: subtract the addend */
+        f |= float_muladd_negate_c;
+    }
+    if (v & 2) {                /* nmadd / nmsub: negate the product */
+        f |= float_muladd_negate_product;
+    }
+    return f;
+}
+
+void helper_fma_ss(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    d->ZMM_S(0) =
+        float32_muladd(a->ZMM_S(0), b->ZMM_S(0), c->ZMM_S(0), flags,
+                       &env->sse_status);
+}
+
+void helper_fma_sd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    d->ZMM_D(0) =
+        float64_muladd(a->ZMM_D(0), b->ZMM_D(0), c->ZMM_D(0), flags,
+                       &env->sse_status);
+}
+
+void helper_fma_ps(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    for (int i = 0; i < 4; i++)
+        d->ZMM_S(i) =
+            float32_muladd(a->ZMM_S(i), b->ZMM_S(i), c->ZMM_S(i), flags,
+                           &env->sse_status);
+}
+
+void helper_fma_pd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    for (int i = 0; i < 2; i++)
+        d->ZMM_D(i) =
+            float64_muladd(a->ZMM_D(i), b->ZMM_D(i), c->ZMM_D(i), flags,
+                           &env->sse_status);
+}
+
 
 /* float to float conversions */
 void helper_cvtps2pd(CPUX86State *env, Reg *d, Reg *s)

@@ -201,6 +201,12 @@ DEF_HELPER_3(hsubpd, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(addsubps, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(addsubpd, void, env, ZMMReg, ZMMReg)
 
+/* FMA3: env, dst, srcA, srcB, srcC (multiply/add order), muladd flags. */
+DEF_HELPER_6(fma_ss, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_sd, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_ps, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_pd, void, env, Reg, Reg, Reg, Reg, int)
+
 #define SSE_HELPER_CMP(name, F)                           \
     DEF_HELPER_3(name ## ps, void, env, Reg, Reg)         \
     DEF_HELPER_3(name ## ss, void, env, Reg, Reg)         \

@@ -4151,6 +4151,99 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
     return true;
 }
 
+/* x86 FMA3 (VEX.66.0F38 0x98-0x9F / 0xA8-0xAF / 0xB8-0xBF): fused multiply-add
+ * with a SINGLE rounding via float{32,64}_muladd.  The three xmm sources are
+ *   OP1 = xmm[reg]   (the dst, which is also a source)
+ *   OP2 = xmm[vvvv]
+ *   OP3 = xmm[rm] or m32/m64/m128
+ * and the opcode high nibble selects the multiply/add permutation
+ *   9x = 132 : dst = OP1*OP3 + OP2
+ *   Ax = 213 : dst = OP2*OP1 + OP3
+ *   Bx = 231 : dst = OP2*OP3 + OP1
+ * The low nibble selects scalar(odd)/packed(even) and the sign variant
+ * (8/9 madd, A/B msub, C/D nmadd, E/F nmsub); VEX.W (dflag==MO_64) picks f64.
+ * VEX.128 only.  Returns true when an FMA opcode was consumed. */
+static bool gen_x86_fma(CPUX86State *env, DisasContext *s, int b, int modrm,
+                        int reg, int rm, int mod)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    int lo = b & 0x0f;
+    int hi = b & 0xf0;
+    bool scalar = lo & 1;
+    bool is_d = (s->dflag == MO_64);    /* VEX.W -> f64 (pd/sd) */
+    int variant;
+
+    /* low nibble: 8/9 madd, a/b msub, c/d nmadd, e/f nmsub.  The helper turns
+     * this variant code into softfloat muladd negate flags (bit0=negate addend,
+     * bit1=negate product) so the float-status enum stays out of the decoder. */
+    switch (lo) {
+    case 0x8: case 0x9: variant = 0; break;     /* madd:  a*b + c */
+    case 0xa: case 0xb: variant = 1; break;     /* msub:  a*b - c */
+    case 0xc: case 0xd: variant = 2; break;     /* nmadd: -(a*b) + c */
+    case 0xe: case 0xf: variant = 3; break;     /* nmsub: -(a*b) - c */
+    default:
+        return false;
+    }
+
+    int op1 = offsetof(CPUX86State, xmm_regs[reg]);        /* dst, also a src */
+    int op2 = offsetof(CPUX86State, xmm_regs[s->vex_v]);   /* vvvv */
+    int op3;                                               /* rm or memory */
+    if (mod == 3) {
+        op3 = offsetof(CPUX86State, xmm_regs[rm | REX_B(s)]);
+    } else {
+        op3 = offsetof(CPUX86State, xmm_t0);
+        gen_lea_modrm(env, s, modrm);
+        if (!scalar) {
+            gen_ldo_env_A0(s, op3);
+        } else if (is_d) {
+            gen_ldq_env_A0(s, op3 + offsetof(ZMMReg, ZMM_Q(0)));
+        } else {
+            tcg_gen_qemu_ld_i32(tcg_ctx, s->tmp2_i32, s->A0, s->mem_index,
+                                MO_LEUL);
+            tcg_gen_st_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                           op3 + offsetof(ZMMReg, ZMM_L(0)));
+        }
+    }
+
+    int sa, sb, sc;     /* permuted into multiply (sa*sb) + add (sc) order */
+    switch (hi) {
+    case 0x90: sa = op1; sb = op3; sc = op2; break;     /* 132 */
+    case 0xa0: sa = op2; sb = op1; sc = op3; break;     /* 213 */
+    case 0xb0: sa = op2; sb = op3; sc = op1; break;     /* 231 */
+    default:
+        return false;
+    }
+
+    TCGv_ptr pd = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_ptr pa = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_ptr pb = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_ptr pc = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_i32 fl = tcg_const_i32(tcg_ctx, variant);
+    tcg_gen_addi_ptr(tcg_ctx, pd, tcg_ctx->cpu_env, op1);
+    tcg_gen_addi_ptr(tcg_ctx, pa, tcg_ctx->cpu_env, sa);
+    tcg_gen_addi_ptr(tcg_ctx, pb, tcg_ctx->cpu_env, sb);
+    tcg_gen_addi_ptr(tcg_ctx, pc, tcg_ctx->cpu_env, sc);
+    if (scalar && is_d) {
+        gen_helper_fma_sd(tcg_ctx, tcg_ctx->cpu_env, pd, pa, pb, pc, fl);
+    } else if (scalar) {
+        gen_helper_fma_ss(tcg_ctx, tcg_ctx->cpu_env, pd, pa, pb, pc, fl);
+    } else if (is_d) {
+        gen_helper_fma_pd(tcg_ctx, tcg_ctx->cpu_env, pd, pa, pb, pc, fl);
+    } else {
+        gen_helper_fma_ps(tcg_ctx, tcg_ctx->cpu_env, pd, pa, pb, pc, fl);
+    }
+    tcg_temp_free_ptr(tcg_ctx, pd);
+    tcg_temp_free_ptr(tcg_ctx, pa);
+    tcg_temp_free_ptr(tcg_ctx, pb);
+    tcg_temp_free_ptr(tcg_ctx, pc);
+    tcg_temp_free_i32(tcg_ctx, fl);
+
+    if (s->vex_l == 0) {
+        gen_clear_ymmh(s, reg);     /* VEX.128 zeroes dst[255:128] */
+    }
+    return true;
+}
+
 static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     target_ulong pc_start, int rex_r)
 {
@@ -4986,6 +5079,17 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                             tcg_gen_st8_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
                                            doff + offsetof(ZMMReg, ZMM_B(i)));
                     }
+                    break;
+                }
+            }
+
+            /* FMA3 (VEX.66.0f38): 3-source fused multiply-add, single round.
+             * These opcodes have no two-operand SSE table entry, so handle
+             * them before the table lookup would reject them. */
+            if ((s->prefix & PREFIX_VEX) && b1 == 1 &&
+                ((b >= 0x98 && b <= 0x9f) || (b >= 0xa8 && b <= 0xaf) ||
+                 (b >= 0xb8 && b <= 0xbf))) {
+                if (gen_x86_fma(env, s, b, modrm, reg, rm, mod)) {
                     break;
                 }
             }
