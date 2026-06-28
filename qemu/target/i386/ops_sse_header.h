@@ -166,6 +166,9 @@ DEF_HELPER_3(cvtsq2sd, void, env, ZMMReg, i64)
 
 DEF_HELPER_3(cvtps2dq, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(cvtpd2dq, void, env, ZMMReg, ZMMReg)
+/* F16C half-precision <-> single-precision packed conversions. */
+DEF_HELPER_3(cvtph2ps, void, env, ZMMReg, ZMMReg)
+DEF_HELPER_4(cvtps2ph, void, env, ZMMReg, ZMMReg, i32)
 DEF_HELPER_3(cvtps2pi, void, env, MMXReg, ZMMReg)
 DEF_HELPER_3(cvtpd2pi, void, env, MMXReg, ZMMReg)
 DEF_HELPER_2(cvtss2si, s32, env, ZMMReg)

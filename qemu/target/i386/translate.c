@@ -3299,6 +3299,7 @@ static const struct SSEOpHelper_epp sse_op_table6[256] = {
     [0x0a] = SSSE3_OP(psignd),
     [0x0b] = SSSE3_OP(pmulhrsw),
     [0x10] = SSE41_OP(pblendvb),
+    [0x13] = { { NULL, gen_helper_cvtph2ps }, CPUID_EXT_F16C }, /* vcvtph2ps */
     [0x14] = SSE41_OP(blendvps),
     [0x15] = SSE41_OP(blendvpd),
     [0x17] = SSE41_OP(ptest),
@@ -3352,6 +3353,7 @@ static const struct SSEOpHelper_eppi sse_op_table7[256] = {
     [0x15] = SSE41_SPECIAL, /* pextrw */
     [0x16] = SSE41_SPECIAL, /* pextrd/pextrq */
     [0x17] = SSE41_SPECIAL, /* extractps */
+    [0x1d] = { { NULL, SSE_SPECIAL }, CPUID_EXT_F16C }, /* vcvtps2ph */
     [0x20] = SSE41_SPECIAL, /* pinsrb */
     [0x21] = SSE41_SPECIAL, /* insertps */
     [0x22] = SSE41_SPECIAL, /* pinsrd/pinsrq */
@@ -5109,6 +5111,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     op2_offset = offsetof(CPUX86State,xmm_t0);
                     gen_lea_modrm(env, s, modrm);
                     switch (b) {
+                    case 0x13: /* vcvtph2ps: four packed halves in the low 64b */
                     case 0x20: case 0x30: /* pmovsxbw, pmovzxbw */
                     case 0x23: case 0x33: /* pmovsxwd, pmovzxwd */
                     case 0x25: case 0x35: /* pmovsxdq, pmovzxdq */
@@ -5737,6 +5740,32 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     } else {
                         tcg_gen_qemu_st_tl(tcg_ctx, s->T0, s->A0,
                                            s->mem_index, MO_LEUL);
+                    }
+                    break;
+                case 0x1d: /* vcvtps2ph: 4 floats (reg) -> 4 halves (rm) */
+                    {
+                        TCGv_i32 f16imm = tcg_const_i32(tcg_ctx, val);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env,
+                                         offsetof(CPUX86State, xmm_t0));
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                                         offsetof(CPUX86State, xmm_regs[reg]));
+                        gen_helper_cvtps2ph(tcg_ctx, tcg_ctx->cpu_env, s->ptr0,
+                                            s->ptr1, f16imm);
+                        tcg_temp_free_i32(tcg_ctx, f16imm);
+                        tcg_gen_ld_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                                       offsetof(CPUX86State, xmm_t0.ZMM_Q(0)));
+                        if (mod == 3) {
+                            tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                                           offsetof(CPUX86State,
+                                                    xmm_regs[rm].ZMM_Q(0)));
+                            tcg_gen_movi_i64(tcg_ctx, s->tmp1_i64, 0);
+                            tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                                           offsetof(CPUX86State,
+                                                    xmm_regs[rm].ZMM_Q(1)));
+                        } else {
+                            tcg_gen_qemu_st_i64(tcg_ctx, s->tmp1_i64, s->A0,
+                                                s->mem_index, MO_LEQ);
+                        }
                     }
                     break;
                 case 0x20: /* pinsrb */

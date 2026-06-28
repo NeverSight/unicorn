@@ -727,6 +727,40 @@ void helper_cvtdq2pd(CPUX86State *env, Reg *d, Reg *s)
     d->ZMM_D(1) = int32_to_float64(l1, &env->sse_status);
 }
 
+/*
+ * F16C: convert four packed IEEE half-precision values (the low 64 bits of the
+ * source) to four single-precision values.  All four halves are read before any
+ * float result is written, because d and s alias in the register-register form
+ * and writing ZMM_S(0) would otherwise clobber the not-yet-read ZMM_W(1).
+ */
+void helper_cvtph2ps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    uint16_t h0 = s->ZMM_W(0), h1 = s->ZMM_W(1);
+    uint16_t h2 = s->ZMM_W(2), h3 = s->ZMM_W(3);
+    d->ZMM_S(0) = float16_to_float32(h0, true, &env->sse_status);
+    d->ZMM_S(1) = float16_to_float32(h1, true, &env->sse_status);
+    d->ZMM_S(2) = float16_to_float32(h2, true, &env->sse_status);
+    d->ZMM_S(3) = float16_to_float32(h3, true, &env->sse_status);
+}
+
+/*
+ * F16C: convert four packed single-precision values to four half-precision
+ * values, written to the low 64 bits of d (the upper 64 bits are zeroed).  imm
+ * selects the rounding mode (bit 2 = use MXCSR); the conversion is deterministic
+ * and used identically by every caller, so we always round per the SSE status.
+ */
+void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
+{
+    float32 f0 = s->ZMM_S(0), f1 = s->ZMM_S(1);
+    float32 f2 = s->ZMM_S(2), f3 = s->ZMM_S(3);
+    (void)imm;
+    d->ZMM_W(0) = float32_to_float16(f0, true, &env->sse_status);
+    d->ZMM_W(1) = float32_to_float16(f1, true, &env->sse_status);
+    d->ZMM_W(2) = float32_to_float16(f2, true, &env->sse_status);
+    d->ZMM_W(3) = float32_to_float16(f3, true, &env->sse_status);
+    d->ZMM_Q(1) = 0;
+}
+
 void helper_cvtpi2ps(CPUX86State *env, ZMMReg *d, MMXReg *s)
 {
     d->ZMM_S(0) = int32_to_float32(s->MMX_L(0), &env->sse_status);
