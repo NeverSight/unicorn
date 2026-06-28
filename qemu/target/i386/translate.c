@@ -3747,6 +3747,53 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
                 gen_sto_env_A0(s, op1_offset + (val & 1) * YMM_HI_LANE_OFF);
             }
             return true;
+        case 0x1d: { /* vcvtps2ph (256-bit): ymm reg -> xmm/m128 */
+            /* 8 single-precision floats in the ymm reg source narrow to 8 packed
+             * halves in the xmm/m128 dst.  Convert each 128-bit lane with the
+             * existing cvtps2ph helper (low 4 floats -> low 4 halves, high 4
+             * floats -> high 4 halves) into xmm_t0, then combine the two 64-bit
+             * half-results into the 128-bit dst.  A register dst has its upper
+             * 128 bits zeroed per the AVX rule. */
+            int t0 = offsetof(CPUX86State, xmm_t0);
+            TCGv_i64 lo = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i32 f16imm;
+            if (mod != 3) {
+                s->rip_offset = 1;
+                gen_lea_modrm(env, s, modrm);
+            }
+            val = x86_ldub_code(env, s);
+            f16imm = tcg_const_i32(tcg_ctx, val);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, t0);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op1_offset);
+            gen_helper_cvtps2ph(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1,
+                                f16imm);
+            tcg_gen_ld_i64(tcg_ctx, lo, tcg_ctx->cpu_env,
+                           t0 + offsetof(ZMMReg, ZMM_Q(0)));
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, t0);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                             op1_offset + YMM_HI_LANE_OFF);
+            gen_helper_cvtps2ph(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1,
+                                f16imm);
+            tcg_gen_ld_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                           t0 + offsetof(ZMMReg, ZMM_Q(0)));
+            tcg_temp_free_i32(tcg_ctx, f16imm);
+            if (mod == 3) {
+                tcg_gen_st_i64(tcg_ctx, lo, tcg_ctx->cpu_env,
+                               offsetof(CPUX86State, xmm_regs[rm]) +
+                                   offsetof(ZMMReg, ZMM_Q(0)));
+                tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                               offsetof(CPUX86State, xmm_regs[rm]) +
+                                   offsetof(ZMMReg, ZMM_Q(1)));
+                gen_clear_ymmh(s, rm);
+            } else {
+                tcg_gen_qemu_st_i64(tcg_ctx, lo, s->A0, s->mem_index, MO_LEQ);
+                tcg_gen_addi_tl(tcg_ctx, s->A0, s->A0, 8);
+                tcg_gen_qemu_st_i64(tcg_ctx, s->tmp1_i64, s->A0, s->mem_index,
+                                    MO_LEQ);
+            }
+            tcg_temp_free_i64(tcg_ctx, lo);
+            return true;
+        }
         default:
             return false;
         }
@@ -3944,9 +3991,13 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             }
             return true;
         }
-        /* Widening pmovsx/pmovzx: narrow 128-bit src expands to a 256-bit dst,
-         * so each output lane consumes 16/factor source bytes (not lane-wise). */
-        if ((sub >= 0x20 && sub <= 0x25) || (sub >= 0x30 && sub <= 0x35)) {
+        /* Widening pmovsx/pmovzx + VCVTPH2PS: a narrow 128-bit src expands to a
+         * 256-bit dst, so each output lane consumes 16/factor source bytes (not
+         * lane-wise).  VCVTPH2PS (0f38 13) reads 8 halves (low 8 bytes per lane)
+         * and writes 4 floats per 128-bit lane, i.e. the 2x-widen (step=8) shape
+         * the cvtph2ps helper already implements for the 128-bit form. */
+        if (sub == 0x13 || (sub >= 0x20 && sub <= 0x25) ||
+            (sub >= 0x30 && sub <= 0x35)) {
             int t0 = offsetof(CPUX86State, xmm_t0);
             int step;
 
@@ -4470,10 +4521,21 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 gen_ldq_env_A0(s, offsetof(CPUX86State,
                                            xmm_regs[reg].ZMM_Q(0)));
             } else {
-                /* movhlps */
+                /* movhlps / vmovhlps */
                 rm = (modrm & 7) | REX_B(s);
                 gen_op_movq(s, offsetof(CPUX86State, xmm_regs[reg].ZMM_Q(0)),
                             offsetof(CPUX86State,xmm_regs[rm].ZMM_Q(1)));
+                if (s->prefix & PREFIX_VEX) {
+                    /* VEX three-operand vmovhlps: dst[127:64] =
+                     * src1(vvvv)[127:64], and the 128-bit VEX write zeroes
+                     * dst[255:128].  The legacy two-operand movhlps leaves
+                     * dst[127:64] untouched, so this VEX merge is required. */
+                    gen_op_movq(s,
+                                offsetof(CPUX86State, xmm_regs[reg].ZMM_Q(1)),
+                                offsetof(CPUX86State,
+                                         xmm_regs[s->vex_v].ZMM_Q(1)));
+                    gen_clear_ymmh(s, reg);
+                }
             }
             break;
         case 0x212: /* movsldup */
@@ -4512,10 +4574,22 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                 gen_ldq_env_A0(s, offsetof(CPUX86State,
                                            xmm_regs[reg].ZMM_Q(1)));
             } else {
-                /* movlhps */
+                /* movlhps / vmovlhps */
                 rm = (modrm & 7) | REX_B(s);
                 gen_op_movq(s, offsetof(CPUX86State, xmm_regs[reg].ZMM_Q(1)),
                             offsetof(CPUX86State,xmm_regs[rm].ZMM_Q(0)));
+                if (s->prefix & PREFIX_VEX) {
+                    /* VEX three-operand vmovlhps: dst[63:0] = src1(vvvv)[63:0],
+                     * and the 128-bit VEX write zeroes dst[255:128].  The legacy
+                     * two-operand movlhps leaves dst[63:0] untouched, so this
+                     * VEX merge is required (without it dst[63:0] keeps stale
+                     * data — the bug that silently zeroed packed-vector lanes). */
+                    gen_op_movq(s,
+                                offsetof(CPUX86State, xmm_regs[reg].ZMM_Q(0)),
+                                offsetof(CPUX86State,
+                                         xmm_regs[s->vex_v].ZMM_Q(0)));
+                    gen_clear_ymmh(s, reg);
+                }
             }
             break;
         case 0x216: /* movshdup */
