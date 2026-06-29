@@ -3690,6 +3690,34 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             }
             return true;
         }
+        case 0x0e: /* vpblendw: per-128-bit-lane word blend by imm8.  imm8[b]
+                    * (b in 0..7) selects src2.word[b] (else src1.word[b]) within
+                    * EACH 128-bit lane -- the same imm8 bit drives word b and
+                    * word b+8 (one imm8 covers both lanes).  src1=vvvv,
+                    * src2=rm/mem; each output word depends only on the same input
+                    * word, so an in-place dst==src blend is safe. */
+        {
+            int s1_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+            int s2_off;
+            int i;
+            if (mod == 3) {
+                s2_off = offsetof(CPUX86State, xmm_regs[rm]);
+            } else {
+                s2_off = offsetof(CPUX86State, xmm_t0);
+                s->rip_offset = 1;
+                gen_lea_modrm(env, s, modrm);
+                gen_ldy_env_A0(s, s2_off);
+            }
+            val = x86_ldub_code(env, s);
+            for (i = 0; i < 16; i++) {
+                int from = ((val >> (i & 7)) & 1) ? s2_off : s1_off;
+                tcg_gen_ld16u_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                 from + offsetof(ZMMReg, ZMM_W(i)));
+                tcg_gen_st16_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                op1_offset + offsetof(ZMMReg, ZMM_W(i)));
+            }
+            return true;
+        }
         case 0x0d: /* vblendpd: per-qword blend, dst.Q[i] = imm8[i] ? src2 : src1
                     * (4 packed f64; imm8[0..3]).  src1=vvvv, src2=rm/mem; each
                     * output qword depends only on the same input qword so an
