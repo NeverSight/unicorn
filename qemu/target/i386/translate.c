@@ -4320,6 +4320,26 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
         tcg_temp_free_i32(tcg_ctx, hi);
         return true;
     }
+    case 0x1d7: /* vpmovmskb (ymm): 32 sign bits (16 per 128-bit lane) */
+    {
+        /* dst is a GPR (reg), source is the ymm rm; pmovmskb has no memory
+         * form.  Gather each 128-bit lane's 16-bit byte mask with the 128-bit
+         * helper and concatenate, the high lane's 16 bits above the low's. */
+        int src = offsetof(CPUX86State, xmm_regs[rm]);
+        TCGv_i32 lo = tcg_temp_new_i32(tcg_ctx);
+        TCGv_i32 hi = tcg_temp_new_i32(tcg_ctx);
+        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, src);
+        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                         src + YMM_HI_LANE_OFF);
+        gen_helper_pmovmskb_xmm(tcg_ctx, lo, tcg_ctx->cpu_env, s->ptr0);
+        gen_helper_pmovmskb_xmm(tcg_ctx, hi, tcg_ctx->cpu_env, s->ptr1);
+        tcg_gen_shli_i32(tcg_ctx, hi, hi, 16);
+        tcg_gen_or_i32(tcg_ctx, lo, lo, hi);
+        tcg_gen_extu_i32_tl(tcg_ctx, tcg_ctx->cpu_regs[reg], lo);
+        tcg_temp_free_i32(tcg_ctx, lo);
+        tcg_temp_free_i32(tcg_ctx, hi);
+        return true;
+    }
     }
 
     if (b == 0x12 || b == 0x16) {
