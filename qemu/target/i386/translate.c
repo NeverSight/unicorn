@@ -4049,6 +4049,42 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             }
             return true;
         }
+        case 0x42: /* vmpsadbw: per-128-bit-lane multiple sum-of-abs-differences.
+                    * Eight overlapping 4-byte SADs per lane against a selectable
+                    * block; unlike a plain per-lane op the two 128-bit lanes use
+                    * DIFFERENT imm8 sub-fields -- the low lane imm8[2:0], the
+                    * high lane imm8[5:3].  src1=vvvv, src2=rm/mem; the 128-bit
+                    * helper snapshots its inputs so an in-place dst==src is
+                    * safe. */
+        {
+            SSEFunc_0_eppi ppi;
+            int s2_off, lane;
+            if (sse_op_table7[0x42].op[b1] == SSE_SPECIAL ||
+                !sse_op_table7[0x42].op[b1])
+                return false;
+            ppi = (SSEFunc_0_eppi)sse_op_table7[0x42].op[b1];
+            if (mod == 3) {
+                s2_off = offsetof(CPUX86State, xmm_regs[rm]);
+            } else {
+                s2_off = offsetof(CPUX86State, xmm_t0);
+                s->rip_offset = 1;
+                gen_lea_modrm(env, s, modrm);
+                gen_ldy_env_A0(s, s2_off);
+            }
+            val = x86_ldub_code(env, s);
+            gen_sse_vex_merge_src1_ymm(s, reg, &s2_off);
+            for (lane = 0; lane < 2; lane++) {
+                int off = lane * YMM_HI_LANE_OFF;
+                int limm = (lane == 0) ? (val & 7) : ((val >> 3) & 7);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env,
+                                 op1_offset + off);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                                 s2_off + off);
+                ppi(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1,
+                    tcg_const_i32(tcg_ctx, limm));
+            }
+            return true;
+        }
         default:
             return false;
         }
