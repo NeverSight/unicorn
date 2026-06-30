@@ -4020,6 +4020,35 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             }
             return true;
         }
+        case 0x0f: /* vpalignr: per-128-bit-lane byte align from concat(src1,src2). */
+        {
+            SSEFunc_0_eppi ppi;
+            int s2_off, lane;
+            if (sse_op_table7[0x0f].op[b1] == SSE_SPECIAL ||
+                !sse_op_table7[0x0f].op[b1])
+                return false;
+            ppi = (SSEFunc_0_eppi)sse_op_table7[0x0f].op[b1];
+            if (mod == 3) {
+                s2_off = offsetof(CPUX86State, xmm_regs[rm]);
+            } else {
+                s2_off = offsetof(CPUX86State, xmm_t0);
+                s->rip_offset = 1;
+                gen_lea_modrm(env, s, modrm);
+                gen_ldy_env_A0(s, s2_off);
+            }
+            val = x86_ldub_code(env, s);
+            gen_sse_vex_merge_src1_ymm(s, reg, &s2_off);
+            for (lane = 0; lane < 2; lane++) {
+                int off = lane * YMM_HI_LANE_OFF;
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env,
+                                 op1_offset + off);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                                 s2_off + off);
+                ppi(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1,
+                    tcg_const_i32(tcg_ctx, val));
+            }
+            return true;
+        }
         default:
             return false;
         }
