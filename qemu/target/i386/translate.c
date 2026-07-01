@@ -4096,6 +4096,93 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
         /* AVX2 256-bit VSIB gather (0f38 90-93). */
         if (sub >= 0x90 && sub <= 0x93)
             return gen_vsib_gather(env, s, sub, modrm, reg);
+        /* AVX2 256-bit masked contiguous load/store (0f38 8c load / 8e store):
+         * VPMASKMOVD (VEX.W0, dword lanes) / VPMASKMOVQ (VEX.W1, qword lanes).
+         * A per-lane sign-bit mask in vvvv gates a *contiguous* m256 base (no
+         * VSIB index vector): load lanes whose mask top bit is clear read 0,
+         * store lanes whose mask top bit is clear leave memory unchanged.  The
+         * register form is an invalid encoding (memory operand required).  On a
+         * load the ymm reg is the destination, on a store it is the source;
+         * vvvv is always the mask and rm the memory operand.  Following
+         * gen_vsib_gather, each lane is accessed unconditionally and selected
+         * with movcond -- the store reads back the current memory element so a
+         * masked-off lane rewrites its own value (observably unchanged under
+         * the in-bounds contract). */
+        if (sub == 0x8c || sub == 0x8e) {
+            if (mod == 3)
+                return false;
+            bool is_store = (sub == 0x8e);
+            bool is_q = (s->dflag == MO_64);
+            int reg_off = offsetof(CPUX86State, xmm_regs[reg]);
+            int mask_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+            int n = is_q ? 4 : 8;
+            int esz = is_q ? 8 : 4;
+            gen_lea_modrm(env, s, modrm);
+            for (int i = 0; i < n; i++) {
+                if (i)
+                    tcg_gen_addi_tl(tcg_ctx, s->tmp0, s->A0, i * esz);
+                else
+                    tcg_gen_mov_tl(tcg_ctx, s->tmp0, s->A0);
+                if (is_q) {
+                    TCGv_i64 msk = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 val = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 alt = tcg_temp_new_i64(tcg_ctx);
+                    TCGv_i64 zero = tcg_const_i64(tcg_ctx, 0);
+                    tcg_gen_ld_i64(tcg_ctx, msk, tcg_ctx->cpu_env,
+                                   mask_off + offsetof(ZMMReg, ZMM_Q(i)));
+                    if (is_store) {
+                        tcg_gen_ld_i64(tcg_ctx, val, tcg_ctx->cpu_env,
+                                       reg_off + offsetof(ZMMReg, ZMM_Q(i)));
+                        tcg_gen_qemu_ld_i64(tcg_ctx, alt, s->tmp0, s->mem_index,
+                                            MO_LEQ);
+                        tcg_gen_movcond_i64(tcg_ctx, TCG_COND_LT, val, msk, zero,
+                                            val, alt);
+                        tcg_gen_qemu_st_i64(tcg_ctx, val, s->tmp0, s->mem_index,
+                                            MO_LEQ);
+                    } else {
+                        tcg_gen_qemu_ld_i64(tcg_ctx, val, s->tmp0, s->mem_index,
+                                            MO_LEQ);
+                        tcg_gen_movcond_i64(tcg_ctx, TCG_COND_LT, val, msk, zero,
+                                            val, zero);
+                        tcg_gen_st_i64(tcg_ctx, val, tcg_ctx->cpu_env,
+                                       reg_off + offsetof(ZMMReg, ZMM_Q(i)));
+                    }
+                    tcg_temp_free_i64(tcg_ctx, msk);
+                    tcg_temp_free_i64(tcg_ctx, val);
+                    tcg_temp_free_i64(tcg_ctx, alt);
+                    tcg_temp_free_i64(tcg_ctx, zero);
+                } else {
+                    TCGv_i32 msk = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 val = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 alt = tcg_temp_new_i32(tcg_ctx);
+                    TCGv_i32 zero = tcg_const_i32(tcg_ctx, 0);
+                    tcg_gen_ld_i32(tcg_ctx, msk, tcg_ctx->cpu_env,
+                                   mask_off + offsetof(ZMMReg, ZMM_L(i)));
+                    if (is_store) {
+                        tcg_gen_ld_i32(tcg_ctx, val, tcg_ctx->cpu_env,
+                                       reg_off + offsetof(ZMMReg, ZMM_L(i)));
+                        tcg_gen_qemu_ld_i32(tcg_ctx, alt, s->tmp0, s->mem_index,
+                                            MO_LEUL);
+                        tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LT, val, msk, zero,
+                                            val, alt);
+                        tcg_gen_qemu_st_i32(tcg_ctx, val, s->tmp0, s->mem_index,
+                                            MO_LEUL);
+                    } else {
+                        tcg_gen_qemu_ld_i32(tcg_ctx, val, s->tmp0, s->mem_index,
+                                            MO_LEUL);
+                        tcg_gen_movcond_i32(tcg_ctx, TCG_COND_LT, val, msk, zero,
+                                            val, zero);
+                        tcg_gen_st_i32(tcg_ctx, val, tcg_ctx->cpu_env,
+                                       reg_off + offsetof(ZMMReg, ZMM_L(i)));
+                    }
+                    tcg_temp_free_i32(tcg_ctx, msk);
+                    tcg_temp_free_i32(tcg_ctx, val);
+                    tcg_temp_free_i32(tcg_ctx, alt);
+                    tcg_temp_free_i32(tcg_ctx, zero);
+                }
+            }
+            return true;
+        }
         /* AVX2 per-element variable shift (0f38 45/46/47): dst[i] = src1[i]
          * SHIFT src2[i].  No 128-bit helper exists, so shift each lane inline.
          * x86 does not mask the count -- an out-of-range count yields 0
