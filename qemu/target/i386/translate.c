@@ -3855,7 +3855,9 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
             tcg_temp_free_i64(tcg_ctx, lo);
             return true;
         }
-        case 0x06: { /* vperm2f128: pick each 128-bit dst lane from any of the
+        case 0x06: /* vperm2f128 (FP domain) */
+        case 0x46: { /* vperm2i128 (integer domain) -- bit-identical 128-bit lane
+                      * block permute: pick each 128-bit dst lane from any of the
                       * four source lanes (src1=vvvv low/high, src2=rm/mem
                       * low/high) by imm8; imm bit (j*4+3) zeroes that lane. */
             int s1_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
