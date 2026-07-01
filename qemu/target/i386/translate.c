@@ -4096,23 +4096,30 @@ static bool gen_sse_256(CPUX86State *env, DisasContext *s, int b, int b1,
         /* AVX2 256-bit VSIB gather (0f38 90-93). */
         if (sub >= 0x90 && sub <= 0x93)
             return gen_vsib_gather(env, s, sub, modrm, reg);
-        /* AVX2 256-bit masked contiguous load/store (0f38 8c load / 8e store):
-         * VPMASKMOVD (VEX.W0, dword lanes) / VPMASKMOVQ (VEX.W1, qword lanes).
-         * A per-lane sign-bit mask in vvvv gates a *contiguous* m256 base (no
-         * VSIB index vector): load lanes whose mask top bit is clear read 0,
-         * store lanes whose mask top bit is clear leave memory unchanged.  The
-         * register form is an invalid encoding (memory operand required).  On a
-         * load the ymm reg is the destination, on a store it is the source;
-         * vvvv is always the mask and rm the memory operand.  Following
-         * gen_vsib_gather, each lane is accessed unconditionally and selected
-         * with movcond -- the store reads back the current memory element so a
-         * masked-off lane rewrites its own value (observably unchanged under
-         * the in-bounds contract). */
-        if (sub == 0x8c || sub == 0x8e) {
+        /* 256-bit masked contiguous load/store.  Integer forms (AVX2):
+         * VPMASKMOVD (0f38 8c load / 8e store, VEX.W0 dword lanes) / VPMASKMOVQ
+         * (VEX.W1 qword lanes).  Float forms (AVX): VMASKMOVPS (0f38 2c load /
+         * 2e store, dword lanes) / VMASKMOVPD (0f38 2d load / 2f store, qword
+         * lanes).  A per-lane sign-bit mask in vvvv gates a *contiguous* m256
+         * base (no VSIB index vector): load lanes whose mask top bit is clear
+         * read 0, store lanes whose mask top bit is clear leave memory
+         * unchanged.  The register form is an invalid encoding (memory operand
+         * required).  On a load the ymm reg is the destination, on a store it is
+         * the source; vvvv is always the mask and rm the memory operand.  For
+         * the integer forms VEX.W picks the lane width; for the float forms the
+         * opcode itself does (ps=dword, pd=qword).  Following gen_vsib_gather,
+         * each lane is accessed unconditionally and selected with movcond -- the
+         * store reads back the current memory element so a masked-off lane
+         * rewrites its own value (observably unchanged under the in-bounds
+         * contract). */
+        if (sub == 0x8c || sub == 0x8e || sub == 0x2c || sub == 0x2d ||
+            sub == 0x2e || sub == 0x2f) {
             if (mod == 3)
                 return false;
-            bool is_store = (sub == 0x8e);
-            bool is_q = (s->dflag == MO_64);
+            bool is_fp = (sub >= 0x2c && sub <= 0x2f);
+            bool is_store = is_fp ? (sub == 0x2e || sub == 0x2f) : (sub == 0x8e);
+            bool is_q = is_fp ? (sub == 0x2d || sub == 0x2f)
+                              : (s->dflag == MO_64);
             int reg_off = offsetof(CPUX86State, xmm_regs[reg]);
             int mask_off = offsetof(CPUX86State, xmm_regs[s->vex_v]);
             int n = is_q ? 4 : 8;
