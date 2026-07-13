@@ -527,7 +527,14 @@ void helper_shufps(Reg *d, Reg *s, int order)
     r.L(1) = d->L((order >> 2) & 3);
     r.L(2) = s->L((order >> 4) & 3);
     r.L(3) = s->L((order >> 6) & 3);
-    *d = r;
+    /* Only the low 128 bits are computed; `r` is a full-width Reg whose upper
+     * lanes are uninitialised.  Assigning `*d = r` would copy those garbage
+     * bytes over the destination's high lanes — harmless for a 128-bit dst, but
+     * the VEX.256 decoder invokes this helper once per 128-bit lane with a
+     * +16-byte destination pointer, so a full-width store clobbers the adjacent
+     * lane (destroying an in-place high-lane source).  Store exactly 128 bits. */
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void helper_shufpd(Reg *d, Reg *s, int order)
@@ -536,7 +543,8 @@ void helper_shufpd(Reg *d, Reg *s, int order)
 
     r.Q(0) = d->Q(order & 1);
     r.Q(1) = s->Q((order >> 1) & 1);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshufd, SUFFIX)(Reg *d, Reg *s, int order)
@@ -547,7 +555,8 @@ void glue(helper_pshufd, SUFFIX)(Reg *d, Reg *s, int order)
     r.L(1) = s->L((order >> 2) & 3);
     r.L(2) = s->L((order >> 4) & 3);
     r.L(3) = s->L((order >> 6) & 3);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshuflw, SUFFIX)(Reg *d, Reg *s, int order)
@@ -559,7 +568,8 @@ void glue(helper_pshuflw, SUFFIX)(Reg *d, Reg *s, int order)
     r.W(2) = s->W((order >> 4) & 3);
     r.W(3) = s->W((order >> 6) & 3);
     r.Q(1) = s->Q(1);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
@@ -571,7 +581,8 @@ void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
     r.W(5) = s->W(4 + ((order >> 2) & 3));
     r.W(6) = s->W(4 + ((order >> 4) & 3));
     r.W(7) = s->W(4 + ((order >> 6) & 3));
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 #endif
 
@@ -1015,7 +1026,11 @@ void helper_haddps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     r.ZMM_S(1) = float32_add(d->ZMM_S(2), d->ZMM_S(3), &env->sse_status);
     r.ZMM_S(2) = float32_add(s->ZMM_S(0), s->ZMM_S(1), &env->sse_status);
     r.ZMM_S(3) = float32_add(s->ZMM_S(2), s->ZMM_S(3), &env->sse_status);
-    *d = r;
+    /* Store only the computed 128 bits; the VEX.256 decoder runs this helper
+     * once per 128-bit lane, so a full `*d = r` would clobber the adjacent lane
+     * with the local's uninitialised upper bytes (see pshufd note). */
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_haddpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -1024,7 +1039,8 @@ void helper_haddpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 
     r.ZMM_D(0) = float64_add(d->ZMM_D(0), d->ZMM_D(1), &env->sse_status);
     r.ZMM_D(1) = float64_add(s->ZMM_D(0), s->ZMM_D(1), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_hsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -1035,7 +1051,8 @@ void helper_hsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     r.ZMM_S(1) = float32_sub(d->ZMM_S(2), d->ZMM_S(3), &env->sse_status);
     r.ZMM_S(2) = float32_sub(s->ZMM_S(0), s->ZMM_S(1), &env->sse_status);
     r.ZMM_S(3) = float32_sub(s->ZMM_S(2), s->ZMM_S(3), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_hsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -1044,7 +1061,8 @@ void helper_hsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 
     r.ZMM_D(0) = float64_sub(d->ZMM_D(0), d->ZMM_D(1), &env->sse_status);
     r.ZMM_D(1) = float64_sub(s->ZMM_D(0), s->ZMM_D(1), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_addsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -1231,7 +1249,11 @@ void glue(helper_packsswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.B(14) = satsb((int16_t)s->W(6));
     r.B(15) = satsb((int16_t)s->W(7));
 #endif
-    *d = r;
+    /* Store only the computed width; a full `*d = r` copies the local's
+     * uninitialised upper bytes over the adjacent 128-bit lane when the
+     * VEX.256 decoder runs this helper per lane (see pshufd note). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_packuswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1258,7 +1280,8 @@ void glue(helper_packuswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.B(14) = satub((int16_t)s->W(6));
     r.B(15) = satub((int16_t)s->W(7));
 #endif
-    *d = r;
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1277,7 +1300,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.W(6) = satsw(s->L(2));
     r.W(7) = satsw(s->L(3));
 #endif
-    *d = r;
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define UNPCK_OP(base_name, base)                                       \
@@ -1305,7 +1329,11 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.B(14) = d->B((base << (SHIFT + 2)) + 7);             \
                  r.B(15) = s->B((base << (SHIFT + 2)) + 7);             \
                                                                       ) \
-            *d = r;                                                     \
+            /* store only the computed width; a full `*d = r` would copy  \
+             * the local's uninitialised upper bytes over the adjacent    \
+             * 128-bit lane when the VEX.256 decoder runs this per-lane */ \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     void glue(helper_punpck ## base_name ## wd, SUFFIX)(CPUX86State *env,\
@@ -1323,7 +1351,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.W(6) = d->W((base << (SHIFT + 1)) + 3);              \
                  r.W(7) = s->W((base << (SHIFT + 1)) + 3);              \
                                                                       ) \
-            *d = r;                                                     \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     void glue(helper_punpck ## base_name ## dq, SUFFIX)(CPUX86State *env,\
@@ -1337,7 +1366,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.L(2) = d->L((base << SHIFT) + 1);                    \
                  r.L(3) = s->L((base << SHIFT) + 1);                    \
                                                                       ) \
-            *d = r;                                                     \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     XMM_ONLY(                                                           \
@@ -1350,7 +1380,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                                                                         \
                  r.Q(0) = d->Q(base);                                   \
                  r.Q(1) = s->Q(base);                                   \
-                 *d = r;                                                \
+                 d->Q(0) = r.Q(0);                                      \
+                 d->Q(1) = r.Q(1);                                      \
              }                                                          \
                                                                         )
 
@@ -1516,7 +1547,11 @@ void glue(helper_pshufb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
         r.B(i) = (s->B(i) & 0x80) ? 0 : (d->B(s->B(i) & ((8 << SHIFT) - 1)));
     }
 
-    *d = r;
+    /* Store only the computed width; a full `*d = r` would copy the local's
+     * uninitialised upper bytes over the adjacent 128-bit lane when the
+     * VEX.256 decoder runs this helper once per lane (see pshufd note). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_phaddw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1650,7 +1685,13 @@ void glue(helper_palignr, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
 #undef SHR
     }
 
-    *d = r;
+    /* Store only the computed width (64-bit MMX / 128-bit XMM).  The VEX.256
+     * decoder invokes this helper once per 128-bit lane with a +16-byte
+     * destination pointer, so a full-width `*d = r` store would clobber the
+     * adjacent lane's just-loaded src1 with the uninitialised upper bytes of
+     * the local `r` (destroying an in-place high-lane source). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define XMM0 (env->xmm_regs[0])
@@ -1783,7 +1824,11 @@ void glue(helper_packusdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.W(5) = satuw((int32_t) s->L(1));
     r.W(6) = satuw((int32_t) s->L(2));
     r.W(7) = satuw((int32_t) s->L(3));
-    *d = r;
+    /* Store only the computed 128 bits; a full `*d = r` clobbers the adjacent
+     * lane under the per-lane VEX.256 decoder (see pshufd note).  packusdw is
+     * XMM-only (SSE4.1). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define FMINSB(d, s) MIN((int8_t)d, (int8_t)s)
@@ -2053,7 +2098,13 @@ void glue(helper_mpsadbw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
         r.W(i) += abs1(d->B(d0 + 3) - s->B(s0 + 3));
     }
 
-    *d = r;
+    /* Store only the computed 128 bits.  The VEX.256 decoder runs this helper
+     * once per 128-bit lane with a +16-byte destination pointer, so a full
+     * `*d = r` would copy the local's uninitialised upper bytes over the
+     * adjacent lane (corrupting the high lane's just-read src).  (mpsadbw is
+     * XMM-only; there is no MMX form.)  See the pshufd/pshufb note above. */
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 /* SSE4.2 op helpers */
