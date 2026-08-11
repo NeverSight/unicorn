@@ -375,6 +375,7 @@
 #define floatx80_sub floatx80_sub_s390x
 #define floatx80_mul floatx80_mul_s390x
 #define floatx80_div floatx80_div_s390x
+#define floatx80_modrem floatx80_modrem_s390x
 #define floatx80_rem floatx80_rem_s390x
 #define floatx80_sqrt floatx80_sqrt_s390x
 #define floatx80_eq floatx80_eq_s390x

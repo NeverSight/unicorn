@@ -529,6 +529,299 @@ static void test_x86_x87_fnstenv(void)
     OK(uc_close(uc));
 }
 
+typedef union X87Reg_t {
+    uint64_t alignment;
+    uint8_t bytes[10];
+} X87Reg;
+
+static X87Reg x87_reg(uint64_t significand, uint16_t sign_exponent)
+{
+    X87Reg reg = {0};
+
+    memcpy(reg.bytes, &significand, sizeof(significand));
+    memcpy(reg.bytes + sizeof(significand), &sign_exponent,
+           sizeof(sign_exponent));
+    return reg;
+}
+
+static void x87_reg_unpack(const X87Reg *reg, uint64_t *significand,
+                           uint16_t *sign_exponent)
+{
+    memcpy(significand, reg->bytes, sizeof(*significand));
+    memcpy(sign_exponent, reg->bytes + sizeof(*significand),
+           sizeof(*sign_exponent));
+}
+
+enum {
+    X87_C0 = 0x0100,
+    X87_C1 = 0x0200,
+    X87_C2 = 0x0400,
+    X87_C3 = 0x4000,
+    X87_CC_MASK = X87_C0 | X87_C1 | X87_C2 | X87_C3,
+};
+
+static uc_engine *x87_setup(const char *code, size_t code_size, unsigned top,
+                            X87Reg st0, X87Reg st1, uint16_t condition_codes)
+{
+    uc_engine *uc;
+    uint16_t fpsw = (uint16_t)((top & 7) << 11) | condition_codes;
+    uint16_t fptag = 0;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, code_size);
+    OK(uc_reg_write(uc, UC_X86_REG_FPSW, &fpsw));
+    OK(uc_reg_write(uc, UC_X86_REG_FPTAG, &fptag));
+    OK(uc_reg_write(uc, UC_X86_REG_FP0 + (top & 7), &st0));
+    OK(uc_reg_write(uc, UC_X86_REG_FP0 + ((top + 1) & 7), &st1));
+    return uc;
+}
+
+static void x87_read_st0(uc_engine *uc, unsigned top, uint16_t *fpsw,
+                         uint64_t *significand, uint16_t *sign_exponent)
+{
+    X87Reg st0 = {0};
+
+    OK(uc_reg_read(uc, UC_X86_REG_FPSW, fpsw));
+    OK(uc_reg_read(uc, UC_X86_REG_FP0 + (top & 7), &st0));
+    x87_reg_unpack(&st0, significand, sign_exponent);
+}
+
+static void test_x86_fprem_large_exponent_partial(void)
+{
+    const char fprem[] = "\xd9\xf8";
+    const char fprem1[] = "\xd9\xf5";
+    const char *codes[] = {fprem, fprem1};
+    const unsigned tops[] = {0, 7};
+    unsigned code_index, top_index;
+
+    for (code_index = 0; code_index < sizeof(codes) / sizeof(codes[0]);
+         code_index++) {
+        for (top_index = 0; top_index < sizeof(tops) / sizeof(tops[0]);
+             top_index++) {
+            uc_engine *uc;
+            X87Reg st0 = x87_reg(UINT64_C(0x8000000000000001),
+                                 0x7ffe);
+            X87Reg st1 = x87_reg(UINT64_C(0x8000000000000003),
+                                 0xffbe);
+            uint16_t fpsw;
+            uint64_t significand;
+            uint16_t sign_exponent;
+            unsigned top = tops[top_index];
+
+            uc = x87_setup(codes[code_index], 2, top, st0, st1,
+                           X87_CC_MASK);
+            OK(uc_emu_start(uc, code_start, code_start + 2, 0, 0));
+            x87_read_st0(uc, top, &fpsw, &significand, &sign_exponent);
+
+            TEST_CHECK(((fpsw >> 11) & 7) == top);
+            TEST_CHECK((fpsw & X87_CC_MASK) == X87_C2);
+            TEST_CHECK(sign_exponent == 0x7f82);
+            TEST_CHECK(significand == UINT64_C(0xc000000000000000));
+            OK(uc_close(uc));
+        }
+    }
+}
+
+static void test_x86_fprem_count_callback(uc_engine *uc, uint64_t address,
+                                          uint32_t size, void *user_data)
+{
+    unsigned *count = user_data;
+
+    if (address == code_start) {
+        ++*count;
+    }
+}
+
+static void test_x86_fprem_d64_loop_converges(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    const char code[] = "\xd9\xf8\xdf\xe0\xf6\xc4\x04\x75\xf7";
+    X87Reg st0 = x87_reg(UINT64_C(0x8000000000000001), 0x7ffe);
+    X87Reg st1 = x87_reg(UINT64_C(0x8000000000000003), 0xffbe);
+    unsigned count = 0;
+    uint16_t fpsw;
+    uint64_t significand;
+    uint16_t sign_exponent;
+
+    uc = x87_setup(code, sizeof(code) - 1, 0, st0, st1, 0);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_CODE, test_x86_fprem_count_callback,
+                   &count, 1, 0));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    x87_read_st0(uc, 0, &fpsw, &significand, &sign_exponent);
+
+    TEST_CHECK(count == 2);
+    TEST_CHECK((fpsw & X87_CC_MASK) == 0);
+    TEST_CHECK(sign_exponent == 0x7f82);
+    TEST_CHECK(significand == UINT64_C(0xc000000000000000));
+    OK(uc_close(uc));
+}
+
+static void test_x86_fprem_d200_converges(void)
+{
+    static const struct {
+        uint64_t significand;
+        uint16_t sign_exponent;
+        uint16_t condition_codes;
+        int exponent_gap;
+    } expected[] = {
+        {UINT64_C(0xc000000000000000), 0x4f84, X87_C2, 76},
+        {UINT64_C(0x800000000000001e), 0x4f44, X87_C2, 12},
+        {UINT64_C(0xd800000000000000), 0x4f09, 0, -47},
+    };
+    uc_engine *uc;
+    const char code[] = "\xd9\xf8";
+    X87Reg st0 = x87_reg(UINT64_C(0x8000000000000001), 0x5000);
+    X87Reg st1 = x87_reg(UINT64_C(0x8000000000000003), 0x4f38);
+    int previous_gap = 200;
+    unsigned i;
+
+    uc = x87_setup(code, sizeof(code) - 1, 0, st0, st1, 0);
+    for (i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        uint16_t fpsw;
+        uint64_t significand;
+        uint16_t sign_exponent;
+
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1,
+                        0, 0));
+        x87_read_st0(uc, 0, &fpsw, &significand, &sign_exponent);
+
+        TEST_CHECK((sign_exponent & 0x7fff) != 0x7fff);
+        TEST_CHECK(significand == expected[i].significand);
+        TEST_CHECK(sign_exponent == expected[i].sign_exponent);
+        TEST_CHECK((fpsw & X87_CC_MASK) == expected[i].condition_codes);
+        TEST_CHECK(expected[i].exponent_gap < previous_gap);
+        previous_gap = expected[i].exponent_gap;
+    }
+    TEST_CHECK((expected[2].condition_codes & X87_C2) == 0);
+    OK(uc_close(uc));
+}
+
+static void test_x86_fprem_terminal_thresholds(void)
+{
+    static const struct {
+        unsigned exponent_gap;
+        uint64_t significand;
+        uint16_t sign_exponent;
+        uint16_t condition_codes;
+    } cases[] = {
+        {52, UINT64_C(0xffc0000000000006), 0x3eff,
+         X87_C0 | X87_C1 | X87_C3},
+        {53, UINT64_C(0xff80000000000006), 0x3eff,
+         X87_C0 | X87_C1 | X87_C3},
+        {63, UINT64_C(0xc000000000000000), 0x3ec3,
+         X87_C0 | X87_C3},
+        {64, UINT64_C(0xc000000000000000), 0x3ec4, X87_C2},
+    };
+    const char code[] = "\xd9\xf8";
+    unsigned i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uc_engine *uc;
+        X87Reg st0 = x87_reg(UINT64_C(0x8000000000000001),
+                             (uint16_t)(0x3f00 + cases[i].exponent_gap));
+        X87Reg st1 = x87_reg(UINT64_C(0x8000000000000003), 0x3f00);
+        uint16_t fpsw;
+        uint64_t significand;
+        uint16_t sign_exponent;
+
+        uc = x87_setup(code, sizeof(code) - 1, 0, st0, st1,
+                       X87_CC_MASK);
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1,
+                        0, 0));
+        x87_read_st0(uc, 0, &fpsw, &significand, &sign_exponent);
+        TEST_CHECK(significand == cases[i].significand);
+        TEST_CHECK(sign_exponent == cases[i].sign_exponent);
+        TEST_CHECK((fpsw & X87_CC_MASK) == cases[i].condition_codes);
+        OK(uc_close(uc));
+    }
+}
+
+static void test_x86_fprem_and_fprem1_quotients(void)
+{
+    static const struct {
+        uint8_t opcode;
+        uint64_t dividend_significand;
+        uint16_t dividend_sign_exponent;
+        uint64_t result_significand;
+        uint16_t result_sign_exponent;
+        uint16_t condition_codes;
+    } cases[] = {
+        {0xf8, UINT64_C(0xa000000000000000), 0x4001,
+         UINT64_C(0x8000000000000000), 0x4000, X87_C1},
+        {0xf5, UINT64_C(0xa000000000000000), 0x4001,
+         UINT64_C(0x8000000000000000), 0xbfff, X87_C3},
+        {0xf5, UINT64_C(0x9000000000000000), 0x4001,
+         UINT64_C(0xc000000000000000), 0xbfff, X87_C3},
+        {0xf8, UINT64_C(0xa000000000000000), 0xc001,
+         UINT64_C(0x8000000000000000), 0xc000, X87_C1},
+    };
+    unsigned i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uc_engine *uc;
+        char code[] = "\xd9\x00";
+        X87Reg st0 = x87_reg(cases[i].dividend_significand,
+                             cases[i].dividend_sign_exponent);
+        X87Reg st1 = x87_reg(UINT64_C(0xc000000000000000), 0x4000);
+        uint16_t fpsw;
+        uint64_t significand;
+        uint16_t sign_exponent;
+
+        code[1] = (char)cases[i].opcode;
+        uc = x87_setup(code, sizeof(code) - 1, 0, st0, st1,
+                       X87_CC_MASK);
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1,
+                        0, 0));
+        x87_read_st0(uc, 0, &fpsw, &significand, &sign_exponent);
+        TEST_CHECK(significand == cases[i].result_significand);
+        TEST_CHECK(sign_exponent == cases[i].result_sign_exponent);
+        TEST_CHECK((fpsw & X87_CC_MASK) == cases[i].condition_codes);
+        OK(uc_close(uc));
+    }
+}
+
+static void test_x86_fprem_special_operands(void)
+{
+    const char code[] = "\xd9\xf8";
+    X87Reg inputs[][2] = {
+        {x87_reg(UINT64_C(0x8000000000000000), 0x3fff),
+         x87_reg(UINT64_C(0x8000000000000000), 0x4000)},
+        {x87_reg(UINT64_C(0x8000000000000000), 0x3fff),
+         x87_reg(0, 0)},
+        {x87_reg(UINT64_C(0x8000000000000000), 0x7fff),
+         x87_reg(UINT64_C(0x8000000000000000), 0x3fff)},
+        {x87_reg(UINT64_C(0xc000000000000000), 0x7fff),
+         x87_reg(UINT64_C(0x8000000000000000), 0x3fff)},
+        {x87_reg(UINT64_C(0x8000000000000000), 0x3fff),
+         x87_reg(UINT64_C(0x8000000000000000), 0x7fff)},
+    };
+    const bool expect_nan[] = {false, true, true, true, false};
+    unsigned i;
+
+    for (i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        uc_engine *uc;
+        uint16_t fpsw;
+        uint64_t significand;
+        uint16_t sign_exponent;
+
+        uc = x87_setup(code, sizeof(code) - 1, 0, inputs[i][0],
+                       inputs[i][1], X87_CC_MASK);
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1,
+                        0, 0));
+        x87_read_st0(uc, 0, &fpsw, &significand, &sign_exponent);
+
+        TEST_CHECK((fpsw & X87_CC_MASK) == 0);
+        if (expect_nan[i]) {
+            TEST_CHECK((sign_exponent & 0x7fff) == 0x7fff);
+            TEST_CHECK((significand << 1) != 0);
+        } else {
+            TEST_CHECK(significand == UINT64_C(0x8000000000000000));
+            TEST_CHECK(sign_exponent == 0x3fff);
+        }
+        OK(uc_close(uc));
+    }
+}
+
 static uint64_t test_x86_mmio_read_callback(uc_engine *uc, uint64_t offset,
                                             unsigned size, void *user_data)
 {
@@ -1279,21 +1572,32 @@ static void test_x86_correct_address_in_long_jump_hook(void)
     OK(uc_close(uc));
 }
 
-static void test_x86_invalid_vex_l(void)
+static void test_x86_vex_l_256(void)
 {
     uc_engine *uc;
+    uint64_t rcx = 0x1000;
+    uint8_t input[32];
+    uint8_t ymm1[32] = {0};
+    unsigned i;
 
     /* vmovdqu ymm1, [rcx] */
     char code[] = {'\xC5', '\xFE', '\x6F', '\x09'};
 
-    /* initialize memory and run emulation  */
+    for (i = 0; i < sizeof(input); i++) {
+        input[i] = (uint8_t)i;
+    }
+
+    /* VEX.L=1 selects the architecturally valid 256-bit form on Haswell. */
     OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_ctl_set_cpu_model(uc, UC_CPU_X86_HASWELL));
     OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
-
     OK(uc_mem_write(uc, 0, code, sizeof(code) / sizeof(code[0])));
+    OK(uc_mem_write(uc, rcx, input, sizeof(input)));
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
 
-    uc_assert_err(UC_ERR_INSN_INVALID,
-                  uc_emu_start(uc, 0, sizeof(code) / sizeof(code[0]), 0, 0));
+    OK(uc_emu_start(uc, 0, sizeof(code) / sizeof(code[0]), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_YMM1, ymm1));
+    TEST_CHECK(memcmp(ymm1, input, sizeof(input)) == 0);
     OK(uc_close(uc));
 }
 
@@ -2217,6 +2521,16 @@ TEST_LIST = {
     {"test_x86_invalid_mem_read_stop_in_cb",
      test_x86_invalid_mem_read_stop_in_cb},
     {"test_x86_x87_fnstenv", test_x86_x87_fnstenv},
+    {"test_x86_fprem_large_exponent_partial",
+     test_x86_fprem_large_exponent_partial},
+    {"test_x86_fprem_d64_loop_converges",
+     test_x86_fprem_d64_loop_converges},
+    {"test_x86_fprem_d200_converges", test_x86_fprem_d200_converges},
+    {"test_x86_fprem_terminal_thresholds",
+     test_x86_fprem_terminal_thresholds},
+    {"test_x86_fprem_and_fprem1_quotients",
+     test_x86_fprem_and_fprem1_quotients},
+    {"test_x86_fprem_special_operands", test_x86_fprem_special_operands},
     {"test_x86_mmio", test_x86_mmio},
     {"test_x86_missing_code", test_x86_missing_code},
     {"test_x86_smc_xor", test_x86_smc_xor},
@@ -2240,7 +2554,7 @@ TEST_LIST = {
      test_x86_correct_address_in_small_jump_hook},
     {"test_x86_correct_address_in_long_jump_hook",
      test_x86_correct_address_in_long_jump_hook},
-    {"test_x86_invalid_vex_l", test_x86_invalid_vex_l},
+    {"test_x86_vex_l_256", test_x86_vex_l_256},
 #if !defined(TARGET_READ_INLINED) && defined(BOOST_LITTLE_ENDIAN)
     {"test_x86_unaligned_access", test_x86_unaligned_access},
     {"test_x86_64_unaligned_access", test_x86_64_unaligned_access},
