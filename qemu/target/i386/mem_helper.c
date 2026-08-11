@@ -26,6 +26,16 @@
 #include "qemu/atomic128.h"
 #include "tcg/tcg.h"
 
+void x86_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
+                                 MMUAccessType access_type, int mmu_idx,
+                                 uintptr_t retaddr)
+{
+    X86CPU *cpu = X86_CPU(cs);
+
+    /* Aligned SSE/AVX memory operands raise #GP(0), not #AC. */
+    raise_exception_ra(&cpu->env, EXCP0D_GPF, retaddr);
+}
+
 
 void helper_cmpxchg8b_unlocked(CPUX86State *env, target_ulong a0)
 {

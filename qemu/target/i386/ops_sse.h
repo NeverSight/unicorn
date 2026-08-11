@@ -587,6 +587,255 @@ void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
 #endif
 
 #if SHIFT == 1
+void helper_vpermilps_xmm(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    uint32_t r0 = v->L(s->L(0) & 3);
+    uint32_t r1 = v->L(s->L(1) & 3);
+    uint32_t r2 = v->L(s->L(2) & 3);
+    uint32_t r3 = v->L(s->L(3) & 3);
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = r2;
+    d->L(3) = r3;
+}
+
+void helper_vpermilpd_xmm(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    uint64_t r0 = v->Q((s->Q(0) >> 1) & 1);
+    uint64_t r1 = v->Q((s->Q(1) >> 1) & 1);
+
+    d->Q(0) = r0;
+    d->Q(1) = r1;
+}
+
+void helper_sha1msg1_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0);
+    uint32_t a1 = d->L(1);
+    uint32_t a2 = d->L(2);
+    uint32_t a3 = d->L(3);
+    uint32_t b2 = s->L(2);
+    uint32_t b3 = s->L(3);
+
+    d->L(3) = a3 ^ a1;
+    d->L(2) = a2 ^ a0;
+    d->L(1) = a1 ^ b3;
+    d->L(0) = a0 ^ b2;
+}
+
+void helper_sha1nexte_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+    uint32_t b1 = s->L(1);
+    uint32_t b2 = s->L(2);
+    uint32_t b3 = s->L(3);
+
+    d->L(3) = b3 + rol32(a3, 30);
+    d->L(2) = b2;
+    d->L(1) = b1;
+    d->L(0) = b0;
+}
+
+void helper_sha1msg2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0);
+    uint32_t a1 = d->L(1);
+    uint32_t a2 = d->L(2);
+    uint32_t a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+    uint32_t b1 = s->L(1);
+    uint32_t b2 = s->L(2);
+    uint32_t r3 = rol32(a3 ^ b2, 1);
+
+    d->L(3) = r3;
+    d->L(2) = rol32(a2 ^ b1, 1);
+    d->L(1) = rol32(a1 ^ b0, 1);
+    d->L(0) = rol32(a0 ^ r3, 1);
+}
+
+#define SHA1_F0(b, c, d) (((b) & (c)) ^ (~(b) & (d)))
+#define SHA1_F1(b, c, d) ((b) ^ (c) ^ (d))
+#define SHA1_F2(b, c, d) (((b) & (c)) ^ ((b) & (d)) ^ ((c) & (d)))
+
+#define SHA1RNDS4_HELPER(name, F, K)                                      \
+    void name(CPUX86State *env, Reg *d, Reg *s)                           \
+    {                                                                     \
+        uint32_t A = d->L(3), B = d->L(2), C = d->L(1), D = d->L(0);     \
+        uint32_t W[4] = {s->L(0), s->L(1), s->L(2), s->L(3)};            \
+        uint32_t E = 0, i;                                                \
+                                                                          \
+        for (i = 0; i < 4; ++i) {                                        \
+            uint32_t t = F(B, C, D) + rol32(A, 5) + W[3 - i] + E + K;    \
+            E = D;                                                        \
+            D = C;                                                        \
+            C = rol32(B, 30);                                             \
+            B = A;                                                        \
+            A = t;                                                        \
+        }                                                                 \
+        d->L(3) = A;                                                       \
+        d->L(2) = B;                                                       \
+        d->L(1) = C;                                                       \
+        d->L(0) = D;                                                       \
+    }
+
+SHA1RNDS4_HELPER(helper_sha1rnds4_f0_xmm, SHA1_F0, 0x5A827999)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f1_xmm, SHA1_F1, 0x6ED9EBA1)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f2_xmm, SHA1_F2, 0x8F1BBCDC)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f3_xmm, SHA1_F1, 0xCA62C1D6)
+
+#define SHA256_CH(e, f, g)  (((e) & (f)) ^ (~(e) & (g)))
+#define SHA256_MAJ(a, b, c) (((a) & (b)) ^ ((a) & (c)) ^ ((b) & (c)))
+#define SHA256_RNDS0(w) (ror32((w), 2) ^ ror32((w), 13) ^ ror32((w), 22))
+#define SHA256_RNDS1(w) (ror32((w), 6) ^ ror32((w), 11) ^ ror32((w), 25))
+#define SHA256_MSGS0(w) (ror32((w), 7) ^ ror32((w), 18) ^ ((w) >> 3))
+#define SHA256_MSGS1(w) (ror32((w), 17) ^ ror32((w), 19) ^ ((w) >> 10))
+
+void helper_sha256rnds2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t A = s->L(3), B = s->L(2), C = d->L(3), D = d->L(2);
+    uint32_t E = s->L(1), F = s->L(0), G = d->L(1), H = d->L(0);
+    uint32_t wk0 = env->xmm_regs[0].ZMM_L(0);
+    uint32_t wk1 = env->xmm_regs[0].ZMM_L(1);
+    uint32_t t, AA, EE, r0, r1, r2, r3;
+
+    t = SHA256_CH(E, F, G) + SHA256_RNDS1(E) + wk0 + H;
+    AA = t + SHA256_MAJ(A, B, C) + SHA256_RNDS0(A);
+    EE = t + D;
+    r2 = AA;
+    r0 = EE;
+
+    D = C; C = B; B = A; A = AA;
+    H = G; G = F; F = E; E = EE;
+
+    t = SHA256_CH(E, F, G) + SHA256_RNDS1(E) + wk1 + H;
+    AA = t + SHA256_MAJ(A, B, C) + SHA256_RNDS0(A);
+    EE = t + D;
+    r3 = AA;
+    r1 = EE;
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = r2;
+    d->L(3) = r3;
+}
+
+void helper_sha256msg1_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0), a1 = d->L(1);
+    uint32_t a2 = d->L(2), a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+
+    d->L(0) = a0 + SHA256_MSGS0(a1);
+    d->L(1) = a1 + SHA256_MSGS0(a2);
+    d->L(2) = a2 + SHA256_MSGS0(a3);
+    d->L(3) = a3 + SHA256_MSGS0(b0);
+}
+
+void helper_sha256msg2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0), a1 = d->L(1);
+    uint32_t a2 = d->L(2), a3 = d->L(3);
+    uint32_t b2 = s->L(2), b3 = s->L(3);
+    uint32_t r0 = a0 + SHA256_MSGS1(b2);
+    uint32_t r1 = a1 + SHA256_MSGS1(b3);
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = a2 + SHA256_MSGS1(r0);
+    d->L(3) = a3 + SHA256_MSGS1(r1);
+}
+
+static uint8_t gfni_mul_byte(uint8_t a, uint8_t b)
+{
+    uint16_t product = 0;
+    int bit;
+
+    for (bit = 0; bit < 8; ++bit) {
+        if ((b >> bit) & 1)
+            product ^= (uint16_t)a << bit;
+    }
+    for (bit = 14; bit >= 8; --bit) {
+        if ((product >> bit) & 1)
+            product ^= (uint16_t)0x11b << (bit - 8);
+    }
+    return product;
+}
+
+static uint8_t gfni_inverse_byte(uint8_t value)
+{
+    uint8_t result = 1;
+    uint8_t base = value;
+    unsigned exponent = 254;
+
+    if (value == 0)
+        return 0;
+    while (exponent) {
+        if (exponent & 1)
+            result = gfni_mul_byte(result, base);
+        base = gfni_mul_byte(base, base);
+        exponent >>= 1;
+    }
+    return result;
+}
+
+static uint8_t gfni_parity_byte(uint8_t value)
+{
+    value ^= value >> 4;
+    value ^= value >> 2;
+    value ^= value >> 1;
+    return value & 1;
+}
+
+static void gfni_affine_xmm(Reg *d, Reg *x, Reg *a, uint8_t imm,
+                            bool inverse)
+{
+    uint8_t result[16];
+    int qword, byte, bit;
+
+    for (qword = 0; qword < 2; ++qword) {
+        uint64_t matrix = a->Q(qword);
+        for (byte = 0; byte < 8; ++byte) {
+            uint8_t value = x->B(qword * 8 + byte);
+            uint8_t out = 0;
+            if (inverse)
+                value = gfni_inverse_byte(value);
+            for (bit = 0; bit < 8; ++bit) {
+                uint8_t row = matrix >> ((7 - bit) * 8);
+                uint8_t dot = gfni_parity_byte(row & value);
+                out |= (dot ^ ((imm >> bit) & 1)) << bit;
+            }
+            result[qword * 8 + byte] = out;
+        }
+    }
+    for (byte = 0; byte < 16; ++byte)
+        d->B(byte) = result[byte];
+}
+
+void helper_gf2p8mulb_xmm(CPUX86State *env, Reg *d, Reg *a, Reg *b)
+{
+    uint8_t result[16];
+    int i;
+
+    for (i = 0; i < 16; ++i)
+        result[i] = gfni_mul_byte(a->B(i), b->B(i));
+    for (i = 0; i < 16; ++i)
+        d->B(i) = result[i];
+}
+
+void helper_gf2p8affineqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
+                              uint32_t imm)
+{
+    gfni_affine_xmm(d, x, a, imm, false);
+}
+
+void helper_gf2p8affineinvqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
+                                 uint32_t imm)
+{
+    gfni_affine_xmm(d, x, a, imm, true);
+}
+
 /* FPU ops */
 /* XXX: not accurate */
 
@@ -2213,10 +2462,10 @@ static inline unsigned pcmpxstrx(CPUX86State *env, Reg *d, Reg *s,
             res = (2 << upper) - 1;
             break;
         }
-        for (j = valids - validd; j >= 0; j--) {
+        for (j = valids == upper ? valids : valids - validd; j >= 0; j--) {
             res <<= 1;
             v = 1;
-            for (i = validd; i >= 0; i--) {
+            for (i = MIN(valids - j, validd); i >= 0; i--) {
                 v &= (pcmp_val(s, ctrl, i + j) == pcmp_val(d, ctrl, i));
             }
             res |= v;

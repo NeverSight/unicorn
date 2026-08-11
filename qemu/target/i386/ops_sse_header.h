@@ -130,6 +130,22 @@ DEF_HELPER_3(glue(pshufhw, SUFFIX), void, Reg, Reg, int)
 #endif
 
 #if SHIFT == 1
+DEF_HELPER_4(vpermilps_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_4(vpermilpd_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_3(sha1msg1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1nexte_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1msg2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f0_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f3_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256rnds2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256msg1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256msg2_xmm, void, env, Reg, Reg)
+DEF_HELPER_4(gf2p8mulb_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_5(gf2p8affineqb_xmm, void, env, Reg, Reg, Reg, i32)
+DEF_HELPER_5(gf2p8affineinvqb_xmm, void, env, Reg, Reg, Reg, i32)
+
 /* FPU ops */
 /* XXX: not accurate */
 

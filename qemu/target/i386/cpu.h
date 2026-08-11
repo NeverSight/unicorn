@@ -1723,6 +1723,9 @@ struct X86CPU {
 void x86_cpu_do_interrupt(CPUState *cpu);
 bool x86_cpu_exec_interrupt(CPUState *cpu, int int_req);
 int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
+void x86_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
+                                 MMUAccessType access_type, int mmu_idx,
+                                 uintptr_t retaddr);
 
 void x86_cpu_get_memory_mapping(CPUState *cpu, MemoryMappingList *list);
 
