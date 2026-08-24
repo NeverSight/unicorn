@@ -3635,6 +3635,60 @@ static void test_x86_vzero_state(void)
     }
 }
 
+static void test_x86_lazy_jcc_materializes_condition_before_branch(void)
+{
+    const uint8_t code[] = {
+        0xb8, 0x01, 0x00, 0x00, 0x00,       /* mov eax, 1 */
+        0x48, 0x85, 0xff,                   /* test rdi, rdi */
+        0x7f, 0x0f,                         /* jg +15 */
+        0x48, 0xc1, 0xff, 0x3f,             /* sar rdi, 63 */
+        0x89, 0xf9,                         /* mov ecx, edi */
+        0xc1, 0xe1, 0x08,                   /* shl ecx, 8 */
+        0x40, 0x0f, 0xb6, 0xc7,             /* movzx eax, dil */
+        0x09, 0xc8,                         /* or eax, ecx */
+        0x48, 0x98,                         /* cdqe */
+        0xc3,                               /* ret (not executed) */
+    };
+    uint64_t rdi = UINT64_C(0xffffffffffffff00);
+    uint64_t rax = 0;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_RDI, &rdi));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    TEST_CHECK_(rax == UINT64_MAX,
+                "lazy signed JCC returned 0x%016" PRIx64, rax);
+    OK(uc_close(uc));
+}
+
+static void test_x86_count_hook_syncs_dirty_cc_op(void)
+{
+    const uint8_t code[] = {
+        0x83, 0xc8, 0x00,                   /* or eax, 0 */
+        0x83, 0xc8, 0x00,                   /* or eax, 0 */
+        0x74, 0x05,                         /* je +5 */
+        0xb8, 0xad, 0xde, 0x00, 0x00,       /* mov eax, 0xdead */
+    };
+    const size_t counts[] = { 0, 64 };
+
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        uint32_t eax = 0;
+        uc_engine *uc;
+
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                        sizeof(code));
+        OK(uc_reg_write(uc, UC_X86_REG_EAX, &eax));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0,
+                        counts[i]));
+        OK(uc_reg_read(uc, UC_X86_REG_EAX, &eax));
+        TEST_CHECK_(eax == 0,
+                    "count=%zu left EAX at 0x%08" PRIx32, counts[i], eax);
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
     {"test_x86_in", test_x86_in},
     {"test_x86_out", test_x86_out},
@@ -3770,4 +3824,8 @@ TEST_LIST = {
     {"test_x86_vdpps_ymm_pairwise_lanes",
      test_x86_vdpps_ymm_pairwise_lanes},
     {"test_x86_vzero_state", test_x86_vzero_state},
+    {"test_x86_lazy_jcc_materializes_condition_before_branch",
+     test_x86_lazy_jcc_materializes_condition_before_branch},
+    {"test_x86_count_hook_syncs_dirty_cc_op",
+     test_x86_count_hook_syncs_dirty_cc_op},
     {NULL, NULL}};

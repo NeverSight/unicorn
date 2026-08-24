@@ -1247,9 +1247,10 @@ static inline void gen_jcc1_noeob(DisasContext *s, int b, TCGLabel *l1)
 static inline void gen_jcc1(DisasContext *s, int b, TCGLabel *l1)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
-    CCPrepare cc = gen_prepare_cc(s, b, s->T0);
+    CCPrepare cc;
 
     gen_update_cc_op(s);
+    cc = gen_prepare_cc(s, b, s->T0);
     if (cc.mask != -1) {
         tcg_gen_andi_tl(tcg_ctx, s->T0, cc.reg, cc.mask);
         cc.reg = s->T0;
@@ -7340,7 +7341,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     // Unicorn: callback might need to access to EFLAGS,
     // or want to stop emulation immediately
     if (HOOK_EXISTS_BOUNDED(env->uc, UC_HOOK_CODE, pc_start)) {
-        if (s->last_cc_op != s->cc_op) {
+        if (s->last_cc_op != s->cc_op || s->cc_op_dirty) {
             sync_eflags(s, tcg_ctx);
             s->last_cc_op = s->cc_op;
         }
