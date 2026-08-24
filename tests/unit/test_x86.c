@@ -1893,6 +1893,197 @@ static void test_x86_cmpxchg(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_cmpxchg32_acc_case(uint64_t initial_rax,
+                                        uint64_t initial_mem,
+                                        uint64_t expected_rax,
+                                        uint64_t expected_mem,
+                                        bool expected_zf)
+{
+    uc_engine *uc;
+    char code[] = "\x41\x0f\xb1\x18"; /* cmpxchg dword ptr [r8], ebx */
+    uint64_t data_address = 0x2000000;
+    uint64_t rax = initial_rax;
+    uint64_t rbx = 0;
+    uint64_t r8 = data_address;
+    uint64_t rflags;
+    uint64_t mem;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, sizeof(code) - 1);
+    OK(uc_mem_map(uc, data_address, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, data_address, &initial_mem, sizeof(initial_mem)));
+    OK(uc_reg_write(uc, UC_X86_REG_R8, &r8));
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, &rbx));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+    OK(uc_mem_read(uc, data_address, &mem, sizeof(mem)));
+
+    TEST_CHECK(rax == expected_rax);
+    TEST_CHECK(mem == expected_mem);
+    TEST_CHECK((bool)(rflags & 0x40) == expected_zf);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_cmpxchg32_accumulator(void)
+{
+    test_x86_cmpxchg32_acc_case(0xffffffffffffffffULL,
+                                0xffffffffffffffffULL,
+                                0xffffffffffffffffULL,
+                                0xffffffff00000000ULL, true);
+    test_x86_cmpxchg32_acc_case(0xffffffff00000000ULL,
+                                0xffffffffffffffffULL,
+                                0x00000000ffffffffULL,
+                                0xffffffffffffffffULL, false);
+}
+
+static void test_x86_cmpxchg32_reg_case(uint64_t initial_rax,
+                                        uint64_t initial_rcx,
+                                        uint64_t initial_rbx,
+                                        uint64_t expected_rax,
+                                        uint64_t expected_rcx,
+                                        bool expected_zf)
+{
+    uc_engine *uc;
+    char code[] = "\x0f\xb1\xd9"; /* cmpxchg ecx, ebx */
+    uint64_t rax = initial_rax;
+    uint64_t rcx = initial_rcx;
+    uint64_t rbx = initial_rbx;
+    uint64_t rflags;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, sizeof(code) - 1);
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, &rbx));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_read(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+
+    TEST_CHECK(rax == expected_rax);
+    TEST_CHECK(rcx == expected_rcx);
+    TEST_CHECK((bool)(rflags & 0x40) == expected_zf);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_cmpxchg32_register(void)
+{
+    test_x86_cmpxchg32_reg_case(0xeeeeeeeeffffffffULL,
+                                0xaaaaaaaaffffffffULL,
+                                0x1111111122222222ULL,
+                                0xeeeeeeeeffffffffULL,
+                                0x0000000022222222ULL, true);
+    test_x86_cmpxchg32_reg_case(0x1111111112345678ULL,
+                                0xaaaaaaaaffffffffULL,
+                                0x1111111122222222ULL,
+                                0x00000000ffffffffULL,
+                                0xaaaaaaaaffffffffULL, false);
+}
+
+static void test_x86_ret_imm16_unsigned(void)
+{
+    uc_engine *uc;
+    char code[] = "\xc2\x00\xff"; /* ret 0xff00 */
+    uint64_t stack_address = 0x2000000;
+    uint64_t return_address = code_start + sizeof(code) - 1;
+    uint64_t rsp = stack_address;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, sizeof(code) - 1);
+    OK(uc_mem_map(uc, stack_address, 0x1000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, stack_address, &return_address,
+                    sizeof(return_address)));
+    OK(uc_reg_write(uc, UC_X86_REG_RSP, &rsp));
+
+    OK(uc_emu_start(uc, code_start, return_address, 0, 1));
+    OK(uc_reg_read(uc, UC_X86_REG_RSP, &rsp));
+
+    TEST_CHECK(rsp == stack_address + 8 + 0xff00);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_rorx_rip_relative_imm(void)
+{
+    uc_engine *uc;
+    char code[] = "\xc4\xe3\x7b\xf0\x05\xf6\x14\x00\x00\x00";
+    uint64_t expected_address = code_start + sizeof(code) - 1 + 0x14f6;
+    uint8_t data[] = {0xaa, 0x11, 0x22, 0x33, 0x44};
+    uint64_t rax;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, sizeof(code) - 1);
+    OK(uc_mem_write(uc, expected_address - 1, data, sizeof(data)));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 1));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+
+    TEST_CHECK(rax == 0x44332211);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_shiftd_rip_relative_imm(const char *code,
+                                             size_t code_size, uint64_t rbx,
+                                             uint16_t expected_value)
+{
+    uc_engine *uc;
+    uint64_t expected_address = code_start + code_size + 0x14f7;
+    uint8_t data[] = {0xaa, 0x11, 0x22, 0x33, 0x44};
+    uint8_t previous;
+    uint16_t mem;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, code_size);
+    OK(uc_mem_write(uc, expected_address - 1, data, sizeof(data)));
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, &rbx));
+
+    OK(uc_emu_start(uc, code_start, code_start + code_size, 0, 1));
+    OK(uc_mem_read(uc, expected_address - 1, &previous, sizeof(previous)));
+    OK(uc_mem_read(uc, expected_address, &mem, sizeof(mem)));
+
+    TEST_CHECK(previous == 0xaa);
+    TEST_CHECK(mem == expected_value);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_shld_rip_relative_imm(void)
+{
+    char code[] = "\x66\x0f\xa4\x1d\xf7\x14\x00\x00\x01";
+
+    test_x86_shiftd_rip_relative_imm(code, sizeof(code) - 1, 0x8000, 0x4423);
+}
+
+static void test_x86_shrd_rip_relative_imm(void)
+{
+    char code[] = "\x66\x0f\xac\x1d\xf7\x14\x00\x00\x01";
+
+    test_x86_shiftd_rip_relative_imm(code, sizeof(code) - 1, 1, 0x9108);
+}
+
+static void test_x86_pdep32_zero_extend(void)
+{
+    uc_engine *uc;
+    char code[] = "\xc4\xe2\x63\xf5\xc1"; /* pdep eax, ebx, ecx */
+    uint64_t rax = 0xffffffffffffffffULL;
+    uint64_t rbx = 0xffffffffffffff00ULL;
+    uint64_t rcx = 0xffffffffffffff00ULL;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, code, sizeof(code) - 1);
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, &rbx));
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 1));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+
+    TEST_CHECK(rax == 0x00000000ffff0000ULL);
+
+    OK(uc_close(uc));
+}
+
 static void test_x86_nested_emu_start_cb(uc_engine *uc, uint64_t addr,
                                          size_t size, void *data)
 {
@@ -3062,6 +3253,332 @@ static void test_x86_mem_hooks_pc_guarantee(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_rflags_after_fault(const uint8_t *code, size_t code_size,
+                                        uc_err expected_error,
+                                        uint64_t expected_rflags,
+                                        uint64_t read_only_page_base)
+{
+    uc_engine *uc;
+    uint64_t rflags;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    code_size);
+
+    if (read_only_page_base != 0) {
+        OK(uc_mem_map(uc, read_only_page_base, 0x1000, UC_PROT_READ));
+        OK(uc_reg_write(uc, UC_X86_REG_RBX, &read_only_page_base));
+    }
+
+    uc_assert_err(expected_error,
+                  uc_emu_start(uc, code_start, code_start + code_size, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+
+    TEST_CHECK_(rflags == expected_rflags,
+                "RFLAGS after fault: expected 0x%" PRIx64 ", got 0x%" PRIx64,
+                expected_rflags, rflags);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_rotate_rflags_after_fault(void)
+{
+    const uint8_t rcl_code[] = {
+        0x01, 0xc0,       /* add eax, eax */
+        0xc0, 0x13, 0x00, /* rcl byte ptr [rbx], 0 */
+    };
+    const uint8_t rcr_code[] = {
+        0x01, 0xc0,       /* add eax, eax */
+        0xc0, 0x1b, 0x00, /* rcr byte ptr [rbx], 0 */
+    };
+    const uint64_t read_only_page_base = code_start + code_len;
+
+    test_x86_rflags_after_fault(rcl_code, sizeof(rcl_code),
+                                UC_ERR_READ_UNMAPPED, 0x46, 0);
+    test_x86_rflags_after_fault(rcl_code, sizeof(rcl_code),
+                                UC_ERR_WRITE_PROT, 0x46,
+                                read_only_page_base);
+    test_x86_rflags_after_fault(rcr_code, sizeof(rcr_code),
+                                UC_ERR_READ_UNMAPPED, 0x46, 0);
+    test_x86_rflags_after_fault(rcr_code, sizeof(rcr_code),
+                                UC_ERR_WRITE_PROT, 0x46,
+                                read_only_page_base);
+}
+
+static void test_x86_setcc_rflags_after_fault(void)
+{
+    uint8_t setcc_code[] = {
+        0x01, 0xc0,       /* add eax, eax */
+        0x0f, 0x90, 0x03, /* seto byte ptr [rbx] */
+    };
+    const uint64_t read_only_page_base = code_start + code_len;
+
+    for (uint8_t condition = 0x90; condition <= 0x9f; condition++) {
+        setcc_code[3] = condition;
+        test_x86_rflags_after_fault(setcc_code, sizeof(setcc_code),
+                                    UC_ERR_WRITE_UNMAPPED, 0x46, 0);
+        test_x86_rflags_after_fault(setcc_code, sizeof(setcc_code),
+                                    UC_ERR_WRITE_PROT, 0x46,
+                                    read_only_page_base);
+    }
+}
+
+static void test_x86_group_1a_reserved_encodings(void)
+{
+    const uint64_t stack_base = 0x2000000;
+    const uint64_t stack_value = 0x0123456789abcdefULL;
+    const uint64_t initial_rax = 0xfedcba9876543210ULL;
+
+    for (uint8_t extension = 1; extension <= 7; extension++) {
+        uc_engine *uc;
+        uint8_t code[] = {0x8f, (uint8_t)(0xc0 | (extension << 3))};
+        uint64_t rsp = stack_base;
+        uint64_t rax = initial_rax;
+
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                        sizeof(code));
+        OK(uc_mem_map(uc, stack_base, 0x1000, UC_PROT_ALL));
+        OK(uc_mem_write(uc, stack_base, &stack_value, sizeof(stack_value)));
+        OK(uc_reg_write(uc, UC_X86_REG_RSP, &rsp));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+
+        uc_assert_err(UC_ERR_INSN_INVALID,
+                      uc_emu_start(uc, code_start,
+                                   code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_RSP, &rsp));
+        OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+
+        TEST_CHECK_(rsp == stack_base,
+                    "reserved 8f /%u changed RSP to 0x%" PRIx64,
+                    extension, rsp);
+        TEST_CHECK_(rax == initial_rax,
+                    "reserved 8f /%u changed RAX to 0x%" PRIx64,
+                    extension, rax);
+
+        OK(uc_close(uc));
+    }
+}
+
+static void test_x86_group_5_reserved_fault_priority(void)
+{
+    uc_engine *uc;
+    const uint8_t code[] = {0xff, 0x38}; /* reserved ff /7, qword ptr [rax] */
+    uint64_t rax = code_start + code_len + 0x100;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+
+    uc_assert_err(UC_ERR_INSN_INVALID,
+                  uc_emu_start(uc, code_start, code_start + sizeof(code),
+                               0, 0));
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_group_11_decode_rules(void)
+{
+    const uint64_t initial_rax = 0x1122334455667788ULL;
+
+    for (uint8_t opcode = 0xc6; opcode <= 0xc7; opcode++) {
+        for (uint8_t extension = 1; extension <= 7; extension++) {
+            uc_engine *uc;
+            uint8_t code[] = {
+                opcode, (uint8_t)(0xc0 | (extension << 3)),
+                0x78, 0x56, 0x34, 0x12,
+            };
+            size_t code_size = opcode == 0xc6 ? 3 : sizeof(code);
+            uint64_t rax = initial_rax;
+
+            uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64,
+                            (const char *)code, code_size);
+            OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+
+            uc_assert_err(UC_ERR_INSN_INVALID,
+                          uc_emu_start(uc, code_start,
+                                       code_start + code_size, 0, 0));
+            OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+            TEST_CHECK_(rax == initial_rax,
+                        "reserved %02x /%u changed RAX to 0x%" PRIx64,
+                        opcode, extension, rax);
+
+            OK(uc_close(uc));
+        }
+    }
+
+    {
+        uc_engine *uc;
+        const uint8_t code[] = {
+            0x44, 0xc6, 0xc0, 0xab,                   /* mov al, 0xab */
+            0x44, 0xc7, 0xc1, 0x78, 0x56, 0x34, 0x12, /* mov ecx, imm32 */
+        };
+        uint64_t rax = initial_rax;
+        uint64_t rcx = 0xaabbccddeeff0011ULL;
+
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                        sizeof(code));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_reg_read(uc, UC_X86_REG_RCX, &rcx));
+
+        TEST_CHECK(rax == 0x11223344556677abULL);
+        TEST_CHECK(rcx == 0x0000000012345678ULL);
+
+        OK(uc_close(uc));
+    }
+}
+
+static void test_x86_group_3_extension_1_test(void)
+{
+    uc_engine *uc;
+    const uint8_t code[] = {
+        0xb8, 0x10, 0x00, 0x00, 0x00,       /* mov eax, 0x10 */
+        0xf6, 0xc8, 0x0f,                   /* test al, 0x0f */
+        0x0f, 0x94, 0xc3,                   /* sete bl */
+        0x0f, 0x92, 0xc2,                   /* setc dl */
+        0xf7, 0xc8, 0x18, 0x00, 0x00, 0x00, /* test eax, 0x18 */
+        0x0f, 0x95, 0xc1,                   /* setne cl */
+        0x0f, 0x90, 0xc6,                   /* seto dh */
+    };
+    const uint64_t status_mask = (1ULL << 0) | (1ULL << 2) | (1ULL << 6)
+                                 | (1ULL << 7) | (1ULL << 11);
+    uint64_t rax = 0;
+    uint64_t rbx = 0;
+    uint64_t rcx = 0;
+    uint64_t rdx = 0;
+    uint64_t rflags = status_mask | 2;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_RBX, &rbx));
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_write(uc, UC_X86_REG_RDX, &rdx));
+    OK(uc_reg_write(uc, UC_X86_REG_RFLAGS, &rflags));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_read(uc, UC_X86_REG_RBX, &rbx));
+    OK(uc_reg_read(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_read(uc, UC_X86_REG_RDX, &rdx));
+    OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+
+    TEST_CHECK(rax == 0x10);
+    TEST_CHECK(rbx == 1);
+    TEST_CHECK(rcx == 1);
+    TEST_CHECK(rdx == 0);
+    TEST_CHECK((rflags & status_mask) == 0);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_dpps_pairwise_reduction(void)
+{
+    uc_engine *uc;
+    const uint8_t code[] = {
+        0x66, 0x0f, 0x3a, 0x40, 0xc1, 0xf1, /* dpps xmm0, xmm1, 0xf1 */
+    };
+    const uint32_t lhs[4] = {
+        0x60ad78ec, 0x3f800000, 0xe0ad78ec, 0x3f800000,
+    };
+    const uint32_t rhs[4] = {
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000,
+    };
+    uint32_t mxcsr = 0x1f80;
+    uint32_t result[4] = {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff};
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_MXCSR, &mxcsr));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, lhs));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, rhs));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, result));
+
+    for (size_t lane = 0; lane < 4; lane++) {
+        TEST_CHECK_(result[lane] == 0,
+                    "DPPS lane %zu has bits 0x%08" PRIx32, lane,
+                    result[lane]);
+    }
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_dppd_signed_zero_reduction(void)
+{
+    uc_engine *uc;
+    const uint8_t code[] = {
+        0x66, 0x0f, 0x3a, 0x41, 0xc1, 0x31, /* dppd xmm0, xmm1, 0x31 */
+    };
+    const uint64_t lhs[2] = {
+        0x8000000000000000ULL, 0x8000000000000000ULL,
+    };
+    const uint64_t rhs[2] = {
+        0x3ff0000000000000ULL, 0x3ff0000000000000ULL,
+    };
+    uint32_t mxcsr = 0x1f80;
+    uint64_t result[2] = {0xffffffffffffffffULL, 0xffffffffffffffffULL};
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_MXCSR, &mxcsr));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, lhs));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, rhs));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, result));
+
+    TEST_CHECK_(result[0] == 0x8000000000000000ULL,
+                "DPPD lane 0 has bits 0x%016" PRIx64, result[0]);
+    TEST_CHECK_(result[1] == 0,
+                "DPPD lane 1 has bits 0x%016" PRIx64, result[1]);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_vdpps_ymm_pairwise_lanes(void)
+{
+    uc_engine *uc;
+    const uint8_t code[] = {
+        0xc4, 0xe3, 0x75, 0x40, 0xc2, 0xf1, /* vdpps ymm0, ymm1, ymm2, 0xf1 */
+    };
+    const uint32_t lhs[8] = {
+        0x60ad78ec, 0x3f800000, 0xe0ad78ec, 0x3f800000,
+        0x3f800000, 0x40000000, 0x40400000, 0x40800000,
+    };
+    const uint32_t rhs[8] = {
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000,
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000,
+    };
+    const uint32_t expected[8] = {
+        0, 0, 0, 0, 0x41200000, 0, 0, 0,
+    };
+    uint32_t mxcsr = 0x1f80;
+    uint32_t result[8] = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    };
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_reg_write(uc, UC_X86_REG_MXCSR, &mxcsr));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, lhs));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, rhs));
+
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, result));
+
+    for (size_t lane = 0; lane < 8; lane++) {
+        TEST_CHECK_(result[lane] == expected[lane],
+                    "VDPPS lane %zu has bits 0x%08" PRIx32, lane,
+                    result[lane]);
+    }
+
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {
     {"test_x86_in", test_x86_in},
     {"test_x86_out", test_x86_out},
@@ -3137,6 +3654,13 @@ TEST_LIST = {
     {"test_x86_clear_empty_tb", test_x86_clear_empty_tb},
     {"test_x86_hook_tcg_op", test_x86_hook_tcg_op},
     {"test_x86_cmpxchg", test_x86_cmpxchg},
+    {"test_x86_cmpxchg32_accumulator", test_x86_cmpxchg32_accumulator},
+    {"test_x86_cmpxchg32_register", test_x86_cmpxchg32_register},
+    {"test_x86_ret_imm16_unsigned", test_x86_ret_imm16_unsigned},
+    {"test_x86_rorx_rip_relative_imm", test_x86_rorx_rip_relative_imm},
+    {"test_x86_shld_rip_relative_imm", test_x86_shld_rip_relative_imm},
+    {"test_x86_shrd_rip_relative_imm", test_x86_shrd_rip_relative_imm},
+    {"test_x86_pdep32_zero_extend", test_x86_pdep32_zero_extend},
     {"test_x86_nested_emu_start", test_x86_nested_emu_start},
     {"test_x86_nested_emu_stop", test_x86_nested_emu_stop},
     {"test_x86_64_nested_emu_start_error", test_x86_64_nested_emu_start_error},
@@ -3172,4 +3696,21 @@ TEST_LIST = {
     {"test_x86_dr7", test_x86_dr7},
     {"test_x86_hook_block", test_x86_hook_block},
     {"test_x86_mem_hooks_pc_guarantee", test_x86_mem_hooks_pc_guarantee},
+    {"test_x86_rotate_rflags_after_fault",
+     test_x86_rotate_rflags_after_fault},
+    {"test_x86_setcc_rflags_after_fault",
+     test_x86_setcc_rflags_after_fault},
+    {"test_x86_group_1a_reserved_encodings",
+     test_x86_group_1a_reserved_encodings},
+    {"test_x86_group_5_reserved_fault_priority",
+     test_x86_group_5_reserved_fault_priority},
+    {"test_x86_group_11_decode_rules", test_x86_group_11_decode_rules},
+    {"test_x86_group_3_extension_1_test",
+     test_x86_group_3_extension_1_test},
+    {"test_x86_dpps_pairwise_reduction",
+     test_x86_dpps_pairwise_reduction},
+    {"test_x86_dppd_signed_zero_reduction",
+     test_x86_dppd_signed_zero_reduction},
+    {"test_x86_vdpps_ymm_pairwise_lanes",
+     test_x86_vdpps_ymm_pairwise_lanes},
     {NULL, NULL}};

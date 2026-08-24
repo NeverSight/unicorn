@@ -418,24 +418,20 @@ static const int fcomi_ccval[4] = {CC_C, CC_Z, 0, CC_Z | CC_P | CC_C};
 
 void helper_fcomi_ST0_FT0(CPUX86State *env)
 {
-    int eflags;
     int ret;
 
     ret = floatx80_compare(ST0, FT0, &env->fp_status);
-    eflags = cpu_cc_compute_all(env, CC_OP);
-    eflags = (eflags & ~(CC_Z | CC_P | CC_C)) | fcomi_ccval[ret + 1];
-    CC_SRC = eflags;
+    /* OF, SF, and AF are unconditionally cleared to zero. */
+    CC_SRC = fcomi_ccval[ret + 1];
 }
 
 void helper_fucomi_ST0_FT0(CPUX86State *env)
 {
-    int eflags;
     int ret;
 
     ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
-    eflags = cpu_cc_compute_all(env, CC_OP);
-    eflags = (eflags & ~(CC_Z | CC_P | CC_C)) | fcomi_ccval[ret + 1];
-    CC_SRC = eflags;
+    /* OF, SF, and AF are unconditionally cleared to zero. */
+    CC_SRC = fcomi_ccval[ret + 1];
 }
 
 void helper_fadd_ST0_FT0(CPUX86State *env)
@@ -898,7 +894,11 @@ void helper_fscale(CPUX86State *env)
         ST0 = ST1;
     } else {
         int n = floatx80_to_int32_round_to_zero(ST1, &env->fp_status);
+        int saved_precision =
+            get_floatx80_rounding_precision(&env->fp_status);
+        set_floatx80_rounding_precision(80, &env->fp_status);
         ST0 = floatx80_scalbn(ST0, n, &env->fp_status);
+        set_floatx80_rounding_precision(saved_precision, &env->fp_status);
     }
 }
 
