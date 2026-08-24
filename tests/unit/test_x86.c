@@ -3579,6 +3579,62 @@ static void test_x86_vdpps_ymm_pairwise_lanes(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_vzero_state(void)
+{
+    static const uint8_t code[][3] = {
+        { 0xc5, 0xf8, 0x77 }, /* vzeroupper */
+        { 0xc5, 0xfc, 0x77 }, /* vzeroall */
+    };
+    const uint64_t initial[4] = {
+        0x1111111122222222ULL, 0x3333333344444444ULL,
+        0x5555555566666666ULL, 0x7777777788888888ULL,
+    };
+    int case_index;
+
+    for (case_index = 0; case_index < 2; case_index++) {
+        uint64_t result0[4] = { 0, 0, 0, 0 };
+        uint64_t result15[4] = { 0, 0, 0, 0 };
+        uc_engine *uc;
+
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64,
+                        (const char *)code[case_index],
+                        sizeof(code[case_index]));
+        OK(uc_reg_write(uc, UC_X86_REG_YMM0, initial));
+        OK(uc_reg_write(uc, UC_X86_REG_YMM15, initial));
+        OK(uc_emu_start(uc, code_start,
+                        code_start + sizeof(code[case_index]), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_YMM0, result0));
+        OK(uc_reg_read(uc, UC_X86_REG_YMM15, result15));
+
+        for (int reg_index = 0; reg_index < 2; reg_index++) {
+            const uint64_t *result = reg_index ? result15 : result0;
+
+            if (case_index == 0) {
+                TEST_CHECK(result[0] == initial[0]);
+                TEST_CHECK(result[1] == initial[1]);
+            } else {
+                TEST_CHECK(result[0] == 0);
+                TEST_CHECK(result[1] == 0);
+            }
+            TEST_CHECK(result[2] == 0);
+            TEST_CHECK(result[3] == 0);
+        }
+        OK(uc_close(uc));
+    }
+
+    {
+        const uint8_t invalid_vvvv[] = { 0xc5, 0xf0, 0x77 };
+        uc_engine *uc;
+
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64,
+                        (const char *)invalid_vvvv, sizeof(invalid_vvvv));
+        TEST_CHECK(uc_emu_start(uc, code_start,
+                                code_start + sizeof(invalid_vvvv), 0, 0) ==
+                   UC_ERR_INSN_INVALID);
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
     {"test_x86_in", test_x86_in},
     {"test_x86_out", test_x86_out},
@@ -3713,4 +3769,5 @@ TEST_LIST = {
      test_x86_dppd_signed_zero_reduction},
     {"test_x86_vdpps_ymm_pairwise_lanes",
      test_x86_vdpps_ymm_pairwise_lanes},
+    {"test_x86_vzero_state", test_x86_vzero_state},
     {NULL, NULL}};

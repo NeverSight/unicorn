@@ -3097,6 +3097,19 @@ static inline void gen_clear_ymmh(DisasContext *s, int reg)
     tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env, off + offsetof(ZMMReg, ZMM_Q(3)));
 }
 
+static inline void gen_clear_ymm(DisasContext *s, int reg)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    int off = offsetof(CPUX86State, xmm_regs[reg]);
+    int q;
+
+    tcg_gen_movi_i64(tcg_ctx, s->tmp1_i64, 0);
+    for (q = 0; q < 4; q++) {
+        tcg_gen_st_i64(tcg_ctx, s->tmp1_i64, tcg_ctx->cpu_env,
+                       off + offsetof(ZMMReg, ZMM_Q(q)));
+    }
+}
+
 static inline void gen_op_movl(DisasContext *s, int d_offset, int s_offset)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
@@ -5236,6 +5249,19 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
         return;
     }
     if (b == 0x77) {
+        if (s->prefix & PREFIX_VEX) {
+            if (s->vex_v != 0) {
+                goto illegal_op;
+            }
+            for (reg = 0; reg < CPU_NB_REGS; reg++) {
+                if (s->vex_l) {
+                    gen_clear_ymm(s, reg);
+                } else {
+                    gen_clear_ymmh(s, reg);
+                }
+            }
+            return;
+        }
         /* emms */
         gen_helper_emms(tcg_ctx, tcg_ctx->cpu_env);
         return;
