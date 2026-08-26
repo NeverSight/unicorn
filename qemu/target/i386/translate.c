@@ -886,6 +886,59 @@ static void gen_compute_eflags(DisasContext *s)
     }
 }
 
+/* Compute all EFLAGS into REG without changing the lazy-flag state.  This is
+   used for conditional evaluation, which may be followed by a faulting store
+   and therefore must not commit the current instruction's flag state. */
+static void gen_mov_eflags(DisasContext *s, TCGv reg)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i32 cc_op;
+    TCGv zero = NULL;
+    TCGv dst = tcg_ctx->cpu_cc_dst;
+    TCGv src1 = tcg_ctx->cpu_cc_src;
+    TCGv src2 = tcg_ctx->cpu_cc_src2;
+    bool free_cc_op = false;
+    int live, dead;
+
+    if (s->cc_op == CC_OP_EFLAGS) {
+        tcg_gen_mov_tl(tcg_ctx, reg, tcg_ctx->cpu_cc_src);
+        return;
+    }
+    if (s->cc_op == CC_OP_CLR) {
+        tcg_gen_movi_tl(tcg_ctx, reg, CC_Z | CC_P);
+        return;
+    }
+
+    live = cc_op_live[s->cc_op] & ~USES_CC_SRCT;
+    dead = live ^ (USES_CC_DST | USES_CC_SRC | USES_CC_SRC2);
+    if (dead) {
+        zero = tcg_const_tl(tcg_ctx, 0);
+        if (dead & USES_CC_DST) {
+            dst = zero;
+        }
+        if (dead & USES_CC_SRC) {
+            src1 = zero;
+        }
+        if (dead & USES_CC_SRC2) {
+            src2 = zero;
+        }
+    }
+
+    if (s->cc_op == CC_OP_DYNAMIC) {
+        cc_op = tcg_ctx->cpu_cc_op;
+    } else {
+        cc_op = tcg_const_i32(tcg_ctx, s->cc_op);
+        free_cc_op = true;
+    }
+    gen_helper_cc_compute_all(tcg_ctx, reg, dst, src1, src2, cc_op);
+    if (free_cc_op) {
+        tcg_temp_free_i32(tcg_ctx, cc_op);
+    }
+    if (zero != NULL) {
+        tcg_temp_free(tcg_ctx, zero);
+    }
+}
+
 typedef struct CCPrepare {
     TCGCond cond;
     TCGv reg;
@@ -1002,10 +1055,8 @@ static CCPrepare gen_prepare_eflags_c(DisasContext *s, TCGv reg)
 /* compute eflags.P to reg */
 static CCPrepare gen_prepare_eflags_p(DisasContext *s, TCGv reg)
 {
-    TCGContext *tcg_ctx = s->uc->tcg_ctx;
-
-    gen_compute_eflags(s);
-    return (CCPrepare) { .cond = TCG_COND_NE, .reg = tcg_ctx->cpu_cc_src,
+    gen_mov_eflags(s, reg);
+    return (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
                          .mask = CC_P };
 }
 
@@ -1016,8 +1067,9 @@ static CCPrepare gen_prepare_eflags_s(DisasContext *s, TCGv reg)
 
     switch (s->cc_op) {
     case CC_OP_DYNAMIC:
-        gen_compute_eflags(s);
-        /* FALLTHRU */
+        gen_mov_eflags(s, reg);
+        return (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
+                             .mask = CC_S };
     case CC_OP_EFLAGS:
     case CC_OP_ADCX:
     case CC_OP_ADOX:
@@ -1050,8 +1102,8 @@ static CCPrepare gen_prepare_eflags_o(DisasContext *s, TCGv reg)
     case CC_OP_POPCNT:
         return (CCPrepare) { .cond = TCG_COND_NEVER, .mask = -1 };
     default:
-        gen_compute_eflags(s);
-        return (CCPrepare) { .cond = TCG_COND_NE, .reg = tcg_ctx->cpu_cc_src,
+        gen_mov_eflags(s, reg);
+        return (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
                              .mask = CC_O };
     }
 }
@@ -1063,8 +1115,9 @@ static CCPrepare gen_prepare_eflags_z(DisasContext *s, TCGv reg)
 
     switch (s->cc_op) {
     case CC_OP_DYNAMIC:
-        gen_compute_eflags(s);
-        /* FALLTHRU */
+        gen_mov_eflags(s, reg);
+        return (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
+                             .mask = CC_Z };
     case CC_OP_EFLAGS:
     case CC_OP_ADCX:
     case CC_OP_ADOX:
@@ -1146,8 +1199,8 @@ static CCPrepare gen_prepare_cc(DisasContext *s, int b, TCGv reg)
             cc = gen_prepare_eflags_z(s, reg);
             break;
         case JCC_BE:
-            gen_compute_eflags(s);
-            cc = (CCPrepare) { .cond = TCG_COND_NE, .reg = tcg_ctx->cpu_cc_src,
+            gen_mov_eflags(s, reg);
+            cc = (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
                                .mask = CC_Z | CC_C };
             break;
         case JCC_S:
@@ -1157,23 +1210,17 @@ static CCPrepare gen_prepare_cc(DisasContext *s, int b, TCGv reg)
             cc = gen_prepare_eflags_p(s, reg);
             break;
         case JCC_L:
-            gen_compute_eflags(s);
-            if (reg == tcg_ctx->cpu_cc_src) {
-                reg = s->tmp0;
-            }
-            tcg_gen_shri_tl(tcg_ctx, reg, tcg_ctx->cpu_cc_src, 4); /* CC_O -> CC_S */
-            tcg_gen_xor_tl(tcg_ctx, reg, reg, tcg_ctx->cpu_cc_src);
+            gen_mov_eflags(s, s->tmp4);
+            tcg_gen_shri_tl(tcg_ctx, reg, s->tmp4, 4); /* CC_O -> CC_S */
+            tcg_gen_xor_tl(tcg_ctx, reg, reg, s->tmp4);
             cc = (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
                                .mask = CC_S };
             break;
         default:
         case JCC_LE:
-            gen_compute_eflags(s);
-            if (reg == tcg_ctx->cpu_cc_src) {
-                reg = s->tmp0;
-            }
-            tcg_gen_shri_tl(tcg_ctx, reg, tcg_ctx->cpu_cc_src, 4); /* CC_O -> CC_S */
-            tcg_gen_xor_tl(tcg_ctx, reg, reg, tcg_ctx->cpu_cc_src);
+            gen_mov_eflags(s, s->tmp4);
+            tcg_gen_shri_tl(tcg_ctx, reg, s->tmp4, 4); /* CC_O -> CC_S */
+            tcg_gen_xor_tl(tcg_ctx, reg, reg, s->tmp4);
             cc = (CCPrepare) { .cond = TCG_COND_NE, .reg = reg,
                                .mask = CC_S | CC_Z };
             break;
@@ -6565,7 +6612,8 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     /* If we can't reuse carry-out, get it out of EFLAGS.  */
                     if (!carry_in) {
                         if (s->cc_op != CC_OP_ADCX && s->cc_op != CC_OP_ADOX) {
-                            gen_compute_eflags(s);
+                            gen_mov_eflags(s, tcg_ctx->cpu_cc_src);
+                            set_cc_op(s, CC_OP_EFLAGS);
                         }
                         carry_in = s->tmp0;
                         tcg_gen_extract_tl(tcg_ctx, carry_in, tcg_ctx->cpu_cc_src,

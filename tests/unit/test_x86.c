@@ -3689,6 +3689,66 @@ static void test_x86_count_hook_syncs_dirty_cc_op(void)
     }
 }
 
+static void test_x86_adox_uses_current_static_lazy_op(void)
+{
+    const uint8_t code[] = {
+        0x45, 0x31, 0xc0,                   /* xor r8d, r8d */
+        0xb8, 0xff, 0xff, 0xff, 0xff,       /* mov eax, -1 */
+        0x01, 0xc0,                         /* add eax, eax: CF=1, OF=0 */
+        0x48, 0xc7, 0xc1, 0xff, 0xff, 0xff, 0xff, /* mov rcx, -1 */
+        0xba, 0x01, 0x00, 0x00, 0x00,       /* mov edx, 1 */
+        0xf3, 0x48, 0x0f, 0x38, 0xf6, 0xca, /* adox rcx, rdx */
+        0x41, 0x0f, 0x90, 0xc0,             /* seto r8b */
+    };
+    uint64_t rcx = UINT64_MAX;
+    uint64_t r8 = 0;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_read(uc, UC_X86_REG_R8, &r8));
+    TEST_CHECK_(rcx == 0 && r8 == 1,
+                "ADOX used stale carry state: rcx=0x%016" PRIx64
+                ", of=%" PRIu64,
+                rcx, r8);
+    OK(uc_close(uc));
+}
+
+static void test_x86_lazy_jcc_keeps_prior_cmov_condition(void)
+{
+    const uint8_t code[] = {
+        0xb8, 0x09, 0x00, 0x00, 0x00,       /* mov eax, 9 */
+        0x31, 0xc9,                         /* xor ecx, ecx */
+        0x41, 0x89, 0xc0,                   /* mov r8d, eax */
+        0x41, 0xf7, 0xd8,                   /* neg r8d */
+        0x45, 0x89, 0xc1,                   /* mov r9d, r8d */
+        0x41, 0xc1, 0xf9, 0x1f,             /* sar r9d, 31 */
+        0x41, 0x21, 0xc1,                   /* and r9d, eax */
+        0x45, 0x85, 0xc0,                   /* test r8d, r8d */
+        0x44, 0x0f, 0x4e, 0xc1,             /* cmovle r8d, ecx */
+        0x45, 0x09, 0xc8,                   /* or r8d, r9d */
+        0x31, 0xd2,                         /* xor edx, edx */
+        0xff, 0xc2,                         /* inc edx */
+        0x83, 0xfa, 0x01,                   /* cmp edx, 1 */
+        0x75, 0xf9,                         /* jne -7 */
+        0x44, 0x89, 0xc0,                   /* mov eax, r8d */
+        0xc3,                               /* ret (not executed) */
+    };
+    uint32_t eax = 0;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_EAX, &eax));
+    TEST_CHECK_(eax == 9,
+                "lazy JCC corrupted an earlier CMOV result: 0x%08" PRIx32,
+                eax);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {
     {"test_x86_in", test_x86_in},
     {"test_x86_out", test_x86_out},
@@ -3828,4 +3888,8 @@ TEST_LIST = {
      test_x86_lazy_jcc_materializes_condition_before_branch},
     {"test_x86_count_hook_syncs_dirty_cc_op",
      test_x86_count_hook_syncs_dirty_cc_op},
+    {"test_x86_adox_uses_current_static_lazy_op",
+     test_x86_adox_uses_current_static_lazy_op},
+    {"test_x86_lazy_jcc_keeps_prior_cmov_condition",
+     test_x86_lazy_jcc_keeps_prior_cmov_condition},
     {NULL, NULL}};
