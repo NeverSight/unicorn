@@ -3716,6 +3716,34 @@ static void test_x86_adox_uses_current_static_lazy_op(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_lahf_uses_current_static_lazy_op(void)
+{
+    const uint8_t code[] = {
+        0xb8, 0x0f, 0x00, 0x00, 0x00,       /* mov eax, 0x0f */
+        0x83, 0xc0, 0x01,                   /* add eax, 1: AF=1, PF=0 */
+        0x9f,                               /* lahf */
+        0x0f, 0xb6, 0xcc,                   /* movzx ecx, ah */
+        0xb8, 0x10, 0x00, 0x00, 0x00,       /* mov eax, 0x10 */
+        0x83, 0xe8, 0x01,                   /* sub eax, 1: AF=1, PF=1 */
+        0x9f,                               /* lahf */
+        0x0f, 0xb6, 0xd4,                   /* movzx edx, ah */
+    };
+    uint64_t rcx = 0;
+    uint64_t rdx = 0;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64, (const char *)code,
+                    sizeof(code));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_X86_REG_RCX, &rcx));
+    OK(uc_reg_read(uc, UC_X86_REG_RDX, &rdx));
+    TEST_CHECK_(rcx == 0x12 && rdx == 0x16,
+                "LAHF used stale lazy state: add=0x%02" PRIx64
+                ", sub=0x%02" PRIx64,
+                rcx, rdx);
+    OK(uc_close(uc));
+}
+
 static void test_x86_lazy_jcc_keeps_prior_cmov_condition(void)
 {
     const uint8_t code[] = {
@@ -3890,6 +3918,8 @@ TEST_LIST = {
      test_x86_count_hook_syncs_dirty_cc_op},
     {"test_x86_adox_uses_current_static_lazy_op",
      test_x86_adox_uses_current_static_lazy_op},
+    {"test_x86_lahf_uses_current_static_lazy_op",
+     test_x86_lahf_uses_current_static_lazy_op},
     {"test_x86_lazy_jcc_keeps_prior_cmov_condition",
      test_x86_lazy_jcc_keeps_prior_cmov_condition},
     {NULL, NULL}};

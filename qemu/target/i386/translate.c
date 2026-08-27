@@ -9997,9 +9997,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0x9f: /* lahf */
         if (CODE64(s) && !(s->cpuid_ext3_features & CPUID_EXT3_LAHF_LM))
             goto illegal_op;
-        gen_compute_eflags(s);
-        /* Note: gen_compute_eflags() only gives the condition codes */
-        tcg_gen_ori_tl(tcg_ctx, s->T0, tcg_ctx->cpu_cc_src, 0x02);
+        gen_mov_eflags(s, s->T0);
+        /* Note: gen_mov_eflags() only gives the condition codes */
+        tcg_gen_ori_tl(tcg_ctx, s->T0, s->T0, 0x02);
         gen_op_mov_reg_v(s, MO_8, R_AH, s->T0);
         break;
     case 0xf5: /* cmc */
