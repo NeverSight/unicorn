@@ -10950,7 +10950,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             set_cc_op(s, CC_OP_BMILGB + ot);
             gen_op_mov_reg_v(s, ot, reg, s->T0);
         } else {
-            TCGLabel *zero_input = gen_new_label(tcg_ctx);
+            TCGv source = tcg_temp_new(tcg_ctx);
+            TCGv new_dest = tcg_temp_new(tcg_ctx);
+            TCGv zero = tcg_const_tl(tcg_ctx, 0);
 
             /* For bsr/bsf, only the Z bit is defined and it is related
                to the input and not the result.  */
@@ -10960,19 +10962,25 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             /* ??? The manual says that the output is undefined when the
                input is zero, but real hardware leaves it unchanged, and
                real programs appear to depend on that.  Accomplish this
-               by suppressing the architectural register write on zero.  */
-            tcg_gen_brcondi_tl(tcg_ctx, TCG_COND_EQ, s->T0, 0, zero_input);
+               with a data-flow select so a zero input suppresses the entire
+               architectural register write, including the high-half clearing
+               side effect of a 32-bit write in 64-bit mode.  */
+            tcg_gen_mov_tl(tcg_ctx, source, s->T0);
             if (b & 1) {
                 /* For bsr, return the bit index of the first 1 bit,
                    not the count of leading zeros.  */
-                tcg_gen_xori_tl(tcg_ctx, s->T1, tcg_ctx->cpu_regs[reg], TARGET_LONG_BITS - 1);
-                tcg_gen_clz_tl(tcg_ctx, s->T0, s->T0, s->T1);
+                tcg_gen_clz_tl(tcg_ctx, s->T0, s->T0, zero);
                 tcg_gen_xori_tl(tcg_ctx, s->T0, s->T0, TARGET_LONG_BITS - 1);
             } else {
-                tcg_gen_ctz_tl(tcg_ctx, s->T0, s->T0, tcg_ctx->cpu_regs[reg]);
+                tcg_gen_ctz_tl(tcg_ctx, s->T0, s->T0, zero);
             }
-            gen_op_mov_reg_v(s, ot, reg, s->T0);
-            gen_set_label(tcg_ctx, zero_input);
+            gen_op_deposit_reg_v(s, ot, reg, new_dest, s->T0);
+            tcg_gen_movcond_tl(tcg_ctx, TCG_COND_EQ,
+                               tcg_ctx->cpu_regs[reg], source, zero,
+                               tcg_ctx->cpu_regs[reg], new_dest);
+            tcg_temp_free(tcg_ctx, zero);
+            tcg_temp_free(tcg_ctx, new_dest);
+            tcg_temp_free(tcg_ctx, source);
         }
         break;
         /************************/
