@@ -303,14 +303,15 @@ void helper_rdtscp(CPUX86State *env)
 
 void helper_rdpmc(CPUX86State *env)
 {
-    if ((env->cr[4] & CR4_PCE_MASK) && ((env->hflags & HF_CPL_MASK) != 0)) {
+    if (!(env->cr[4] & CR4_PCE_MASK) &&
+        ((env->hflags & HF_CPL_MASK) != 0)) {
         raise_exception_ra(env, EXCP0D_GPF, GETPC());
     }
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDPMC, 0, GETPC());
 
-    /* currently unimplemented */
-    qemu_log_mask(LOG_UNIMP, "x86: unimplemented rdpmc\n");
-    raise_exception_err(env, EXCP06_ILLOP, 0);
+    /* CPUID.0AH advertises no architectural PMU, so every selector is
+     * unsupported.  Fail closed instead of fabricating a counter value. */
+    raise_exception_ra(env, EXCP0D_GPF, GETPC());
 }
 
 void helper_wrmsr(CPUX86State *env)
@@ -468,8 +469,7 @@ void helper_wrmsr(CPUX86State *env)
             }
             break;
         }
-        /* XXX: exception? */
-        break;
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, GETPC());
     }
 }
 
@@ -620,9 +620,7 @@ void helper_rdmsr(CPUX86State *env)
             val = env->mce_banks[offset];
             break;
         }
-        /* XXX: exception? */
-        val = 0;
-        break;
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, GETPC());
     }
     env->regs[R_EAX] = (uint32_t)(val);
     env->regs[R_EDX] = (uint32_t)(val >> 32);

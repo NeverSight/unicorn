@@ -260,4 +260,4 @@ DEF_HELPER_FLAGS_4(gvec_leu64, TCG_CALL_NO_RWG, void, ptr, ptr, ptr, i32)
 
 DEF_HELPER_FLAGS_5(gvec_bitsel, TCG_CALL_NO_RWG, void, ptr, ptr, ptr, ptr, i32)
 
-DEF_HELPER_2(check_exit_request, void, ptr, i32)
+DEF_HELPER_4(check_exit_request, void, ptr, tl, i32, i32)

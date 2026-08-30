@@ -42,6 +42,14 @@ void cpu_sync_bndcs_hflags(CPUX86State *env)
         hflags &= ~HF_MPX_EN_MASK;
     }
 
+    if ((env->cr[4] & CR4_OSXSAVE_MASK) &&
+        (env->xcr0 & (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) ==
+            (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) {
+        hflags |= HF_AVX_EN_MASK;
+    } else {
+        hflags &= ~HF_AVX_EN_MASK;
+    }
+
     if (bndcsr & BNDCFG_BNDPRESERVE) {
         hflags2 |= HF2_MPX_PR_MASK;
     } else {

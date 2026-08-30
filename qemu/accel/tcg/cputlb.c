@@ -648,7 +648,7 @@ static void tlb_reset_dirty_range_locked(struct uc_struct *uc, CPUTLBEntry *tlb_
     uintptr_t addr = tlb_entry->addr_write;
 
     if ((addr & (TLB_INVALID_MASK | TLB_MMIO |
-                 TLB_DISCARD_WRITE | TLB_NOTDIRTY)) == 0) {
+                 TLB_FORCE_SLOW | TLB_NOTDIRTY)) == 0) {
         addr &= TARGET_PAGE_MASK;
         addr += tlb_entry->addend;
         if ((addr - start) < length) {
@@ -667,7 +667,7 @@ static void tlb_reset_dirty_range_by_vaddr_locked(struct uc_struct *uc, CPUTLBEn
     uintptr_t addr = tlb_entry->addr_write;
 
     if ((addr & (TLB_INVALID_MASK | TLB_MMIO |
-                 TLB_DISCARD_WRITE | TLB_NOTDIRTY)) == 0) {
+                 TLB_FORCE_SLOW | TLB_NOTDIRTY)) == 0) {
         addr &= TARGET_PAGE_MASK;
         if ((addr - start) < length) {
 #if TCG_OVERSIZED_GUEST
@@ -820,6 +820,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     MemoryRegionSection *section;
     unsigned int index;
     target_ulong address;
+    target_ulong read_address;
     target_ulong write_address;
     uintptr_t addend;
     CPUTLBEntry *te, tn;
@@ -873,7 +874,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
          */
         if (prot & PAGE_WRITE) {
             if (section->readonly) {
-                write_address |= TLB_DISCARD_WRITE;
+                write_address |= TLB_FORCE_SLOW;
             } else if (cpu_physical_memory_is_clean(iotlb)) {
                 write_address |= TLB_NOTDIRTY;
             }
@@ -890,6 +891,16 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         //if (!is_romd) {
             address = write_address;
         //}
+    }
+
+    read_address = address;
+    if (is_ram) {
+        if (!(section->mr->perms & UC_PROT_READ)) {
+            read_address |= TLB_FORCE_SLOW;
+        }
+        if (!(section->mr->perms & UC_PROT_WRITE)) {
+            write_address |= TLB_FORCE_SLOW;
+        }
     }
 
     wp_flags = cpu_watchpoint_address_matches(cpu, vaddr_page,
@@ -938,7 +949,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     tn.addend = addend - vaddr_page;
     tn.paddr = paddr_page;
     if (prot & PAGE_READ) {
-        tn.addr_read = address;
+        tn.addr_read = read_address;
         if (wp_flags & BP_MEM_READ) {
             tn.addr_read |= TLB_WATCHPOINT;
         }
@@ -1277,7 +1288,7 @@ void *probe_access(CPUArchState *env, target_ulong addr, int size,
         CPUIOTLBEntry *iotlbentry = &env_tlb(env)->d[mmu_idx].iotlb[index];
 
         /* Reject I/O access, or other required slow-path.  */
-        if (tlb_addr & (TLB_MMIO | TLB_BSWAP | TLB_DISCARD_WRITE)) {
+        if (tlb_addr & (TLB_MMIO | TLB_BSWAP | TLB_FORCE_SLOW)) {
             return NULL;
         }
 
@@ -1442,7 +1453,7 @@ static void *atomic_mmu_lookup(CPUArchState *env, target_ulong addr,
     }
 
     /* Notice an IO access or a needs-MMU-lookup access */
-    if (unlikely(tlb_addr & TLB_MMIO)) {
+    if (unlikely(tlb_addr & (TLB_MMIO | TLB_FORCE_SLOW))) {
         /* There's really nothing that can be done to
            support this apart from stop-the-world.  */
         goto stop_the_world;
@@ -1680,7 +1691,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             tlb_addr = code_read ? entry->addr_code : entry->addr_read;
             tlb_addr &= ~TLB_INVALID_MASK;
         }
+    }
 
+    if (!code_read) {
         // callback on non-readable memory
         if (mr != NULL && !(mr->perms & UC_PROT_READ)) {  //non-readable
             handled = false;
@@ -1729,7 +1742,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
                 return 0;
             }
         }
-    } else if (code_read) {
+    } else {
         // code fetching
         // Unicorn: callback on fetch from NX
         if (mr != NULL && !(mr->perms & UC_PROT_EXEC)) {  // non-executable
@@ -2171,6 +2184,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     bool handled;
     MemoryRegion *mr;
     bool synced = false;
+    bool write_hook_called = false;
 
     /* Handle CPU specific unaligned behaviour */
     if (addr & ((1 << a_bits) - 1)) {
@@ -2205,11 +2219,32 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }
+            write_hook_called = true;
             JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
                 break;
         }
+    }
+
+    /* A write hook may change mappings, flush the TLB, or run nested
+     * emulation that replaces this entry.  Do not use the pre-hook entry. */
+    if (write_hook_called) {
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
+        tlb_addr = tlb_addr_write(entry);
+        if (!tlb_hit(env->uc, tlb_addr, addr)) {
+            if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
+                                addr & TARGET_PAGE_MASK)) {
+                tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
+                         mmu_idx, retaddr);
+                index = tlb_index(env, mmu_idx, addr);
+                entry = tlb_entry(env, mmu_idx, addr);
+            }
+            tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+        }
+        paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
+        mr = uc->memory_mapping(uc, paddr);
     }
 
     // Unicorn: callback on invalid memory
@@ -2288,16 +2323,28 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
 
         if (handled) {
-            /* If the TLB entry is for a different page, reload and try again.  */
+            /* The handler is successful only after it repairs the mapping and
+             * permissions.  It may also have flushed or replaced this entry. */
+            index = tlb_index(env, mmu_idx, addr);
+            entry = tlb_entry(env, mmu_idx, addr);
+            tlb_addr = tlb_addr_write(entry);
             if (!tlb_hit(env->uc, tlb_addr, addr)) {
                 if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                    addr & TARGET_PAGE_MASK)) {
+                                    addr & TARGET_PAGE_MASK)) {
                     tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
                              mmu_idx, retaddr);
                     index = tlb_index(env, mmu_idx, addr);
                     entry = tlb_entry(env, mmu_idx, addr);
                 }
                 tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+            }
+            paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
+            mr = uc->memory_mapping(uc, paddr);
+            if (mr == NULL || !(mr->perms & UC_PROT_WRITE)) {
+                uc->invalid_addr = paddr;
+                uc->invalid_error = UC_ERR_WRITE_PROT;
+                cpu_exit(uc->cpu);
+                return;
             }
             uc->invalid_error = UC_ERR_OK;
         } else {
@@ -2353,8 +2400,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             return;
         }
 
-        /* Ignore writes to ROM.  */
-        if (unlikely(tlb_addr & TLB_DISCARD_WRITE)) {
+        /* Ignore writes to a read-only RAM region after permission hooks. */
+        if (unlikely((tlb_addr & TLB_FORCE_SLOW) && mr->readonly)) {
             return;
         }
 

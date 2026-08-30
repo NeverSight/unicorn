@@ -589,6 +589,7 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             break;
         case UC_X86_REG_MXCSR:
             CHECK_REG_TYPE(uint32_t);
+            update_mxcsr_from_sse_status(env);
             *(uint32_t *)value = env->mxcsr;
             break;
         case UC_X86_REG_FS_BASE:
@@ -973,6 +974,7 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             break;
         case UC_X86_REG_MXCSR:
             CHECK_REG_TYPE(uint32_t);
+            update_mxcsr_from_sse_status(env);
             *(uint32_t *)value = env->mxcsr;
             break;
         case UC_X86_REG_XMM8:

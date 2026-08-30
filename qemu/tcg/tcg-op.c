@@ -2860,6 +2860,8 @@ void check_exit_request(TCGContext *tcg_ctx)
     }
 
     TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
+    TCGv pc = tcg_const_tl(tcg_ctx, 0);
+    TCGv_i32 check_exit_address = tcg_const_i32(tcg_ctx, 0);
     TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
     // Unicorn:
     //    We CANT'T use brcondi_i32 here or we will fail liveness analysis
@@ -2867,8 +2869,10 @@ void check_exit_request(TCGContext *tcg_ctx)
     if (tcg_ctx->delay_slot_flag != NULL) {
         tcg_gen_mov_i32(tcg_ctx, tmp, tcg_ctx->delay_slot_flag);
     }
-    gen_helper_check_exit_request(tcg_ctx, puc, tmp);
+    gen_helper_check_exit_request(tcg_ctx, puc, pc, check_exit_address, tmp);
     tcg_temp_free_i32(tcg_ctx, tmp);
+    tcg_temp_free_i32(tcg_ctx, check_exit_address);
+    tcg_temp_free(tcg_ctx, pc);
     tcg_temp_free_ptr(tcg_ctx, puc);
 }
 

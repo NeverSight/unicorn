@@ -1105,6 +1105,7 @@ static void do_xsave_fpu(CPUX86State *env, target_ulong ptr, uintptr_t ra)
     cpu_stw_data_ra(env, ptr + XO(legacy.fcw), env->fpuc, ra);
     cpu_stw_data_ra(env, ptr + XO(legacy.fsw), fpus, ra);
     cpu_stw_data_ra(env, ptr + XO(legacy.ftw), fptag ^ 0xff, ra);
+    cpu_stw_data_ra(env, ptr + XO(legacy.fpop), env->fpop, ra);
 
     /* In 32-bit mode this is eip, sel, dp, sel.
        In 64-bit mode this is rip, rdp.
@@ -1116,12 +1117,15 @@ static void do_xsave_fpu(CPUX86State *env, target_ulong ptr, uintptr_t ra)
     for (i = 0; i < 8; i++) {
         floatx80 tmp = ST(i);
         helper_fstt(env, tmp, addr, ra);
+        cpu_stl_data_ra(env, addr + 10, 0, ra);
+        cpu_stw_data_ra(env, addr + 14, 0, ra);
         addr += 16;
     }
 }
 
 static void do_xsave_mxcsr(CPUX86State *env, target_ulong ptr, uintptr_t ra)
 {
+    update_mxcsr_from_sse_status(env);
     cpu_stl_data_ra(env, ptr + XO(legacy.mxcsr), env->mxcsr, ra);
     cpu_stl_data_ra(env, ptr + XO(legacy.mxcsr_mask), 0x0000ffff, ra);
 }
@@ -1142,6 +1146,22 @@ static void do_xsave_sse(CPUX86State *env, target_ulong ptr, uintptr_t ra)
         cpu_stq_data_ra(env, addr, env->xmm_regs[i].ZMM_Q(0), ra);
         cpu_stq_data_ra(env, addr + 8, env->xmm_regs[i].ZMM_Q(1), ra);
         addr += 16;
+    }
+}
+
+static void do_xsave_ymmh(CPUX86State *env, target_ulong ptr, uintptr_t ra)
+{
+    int i, nb_xmm_regs;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    for (i = 0; i < nb_xmm_regs; i++, ptr += 16) {
+        cpu_stq_data_ra(env, ptr, env->xmm_regs[i].ZMM_Q(2), ra);
+        cpu_stq_data_ra(env, ptr + 8, env->xmm_regs[i].ZMM_Q(3), ra);
     }
 }
 
@@ -1234,6 +1254,9 @@ static void do_xsave(CPUX86State *env, target_ulong ptr, uint64_t rfbm,
     if (opt & XSTATE_SSE_MASK) {
         do_xsave_sse(env, ptr, ra);
     }
+    if (opt & XSTATE_YMM_MASK) {
+        do_xsave_ymmh(env, ptr + XO(avx_state), ra);
+    }
     if (opt & XSTATE_BNDREGS_MASK) {
         do_xsave_bndregs(env, ptr + XO(bndreg_state), ra);
     }
@@ -1284,9 +1307,15 @@ static void do_xrstor_fpu(CPUX86State *env, target_ulong ptr, uintptr_t ra)
     }
 }
 
-static void do_xrstor_mxcsr(CPUX86State *env, target_ulong ptr, uintptr_t ra)
+static uint32_t load_xrstor_mxcsr(CPUX86State *env, target_ulong ptr,
+                                  uintptr_t ra)
 {
-    cpu_set_mxcsr(env, cpu_ldl_data_ra(env, ptr + XO(legacy.mxcsr), ra));
+    uint32_t mxcsr = cpu_ldl_data_ra(env, ptr + XO(legacy.mxcsr), ra);
+
+    if (mxcsr & 0xffff0000U) {
+        raise_exception_ra(env, EXCP0D_GPF, ra);
+    }
+    return mxcsr;
 }
 
 static void do_xrstor_sse(CPUX86State *env, target_ulong ptr, uintptr_t ra)
@@ -1305,6 +1334,54 @@ static void do_xrstor_sse(CPUX86State *env, target_ulong ptr, uintptr_t ra)
         env->xmm_regs[i].ZMM_Q(0) = cpu_ldq_data_ra(env, addr, ra);
         env->xmm_regs[i].ZMM_Q(1) = cpu_ldq_data_ra(env, addr + 8, ra);
         addr += 16;
+    }
+}
+
+static void do_xrstor_ymmh(CPUX86State *env, target_ulong ptr, uintptr_t ra)
+{
+    int i, nb_xmm_regs;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    for (i = 0; i < nb_xmm_regs; i++, ptr += 16) {
+        env->xmm_regs[i].ZMM_Q(2) = cpu_ldq_data_ra(env, ptr, ra);
+        env->xmm_regs[i].ZMM_Q(3) = cpu_ldq_data_ra(env, ptr + 8, ra);
+    }
+}
+
+static void do_clear_sse(CPUX86State *env)
+{
+    int i, nb_xmm_regs;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    for (i = 0; i < nb_xmm_regs; i++) {
+        env->xmm_regs[i].ZMM_Q(0) = 0;
+        env->xmm_regs[i].ZMM_Q(1) = 0;
+    }
+}
+
+static void do_clear_ymmh(CPUX86State *env)
+{
+    int i, nb_xmm_regs;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    for (i = 0; i < nb_xmm_regs; i++) {
+        env->xmm_regs[i].ZMM_Q(2) = 0;
+        env->xmm_regs[i].ZMM_Q(3) = 0;
     }
 }
 
@@ -1336,16 +1413,24 @@ static void do_xrstor_pkru(CPUX86State *env, target_ulong ptr, uintptr_t ra)
 void helper_fxrstor(CPUX86State *env, target_ulong ptr)
 {
     uintptr_t ra = GETPC();
+    uint32_t mxcsr = 0;
+    bool restore_mxcsr;
 
     /* The operand must be 16 byte aligned */
     if (ptr & 0xf) {
         raise_exception_ra(env, EXCP0D_GPF, ra);
     }
 
+    restore_mxcsr = env->cr[4] & CR4_OSFXSR_MASK;
+    if (restore_mxcsr) {
+        /* Reject reserved MXCSR bits before modifying any x87/SSE state. */
+        mxcsr = load_xrstor_mxcsr(env, ptr, ra);
+    }
+
     do_xrstor_fpu(env, ptr, ra);
 
-    if (env->cr[4] & CR4_OSFXSR_MASK) {
-        do_xrstor_mxcsr(env, ptr, ra);
+    if (restore_mxcsr) {
+        cpu_set_mxcsr(env, mxcsr);
         /* Fast FXRSTOR leaves out the XMM registers */
         if (!(env->efer & MSR_EFER_FFXSR)
             || (env->hflags & HF_CPL_MASK)
@@ -1359,6 +1444,7 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
 {
     uintptr_t ra = GETPC();
     uint64_t xstate_bv, xcomp_bv, reserve0;
+    uint32_t mxcsr = 0;
 
     rfbm &= env->xcr0;
 
@@ -1397,6 +1483,11 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
         raise_exception_ra(env, EXCP0D_GPF, ra);
     }
 
+    if (rfbm & XSTATE_SSE_MASK) {
+        /* Validate MXCSR before restoring any requested state component. */
+        mxcsr = load_xrstor_mxcsr(env, ptr, ra);
+    }
+
     if (rfbm & XSTATE_FP_MASK) {
         if (xstate_bv & XSTATE_FP_MASK) {
             do_xrstor_fpu(env, ptr, ra);
@@ -1408,13 +1499,18 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
     if (rfbm & XSTATE_SSE_MASK) {
         /* Note that the standard form of XRSTOR loads MXCSR from memory
            whether or not the XSTATE_BV bit is set.  */
-        do_xrstor_mxcsr(env, ptr, ra);
+        cpu_set_mxcsr(env, mxcsr);
         if (xstate_bv & XSTATE_SSE_MASK) {
             do_xrstor_sse(env, ptr, ra);
         } else {
-            /* ??? When AVX is implemented, we may have to be more
-               selective in the clearing.  */
-            memset(env->xmm_regs, 0, sizeof(env->xmm_regs));
+            do_clear_sse(env);
+        }
+    }
+    if (rfbm & XSTATE_YMM_MASK) {
+        if (xstate_bv & XSTATE_YMM_MASK) {
+            do_xrstor_ymmh(env, ptr + XO(avx_state), ra);
+        } else {
+            do_clear_ymmh(env);
         }
     }
     if (rfbm & XSTATE_BNDREGS_MASK) {
@@ -1484,6 +1580,11 @@ void helper_xsetbv(CPUX86State *env, uint32_t ecx, uint64_t mask)
         goto do_gpf;
     }
 
+    /* YMM state depends on SSE state and cannot be enabled on its own. */
+    if ((mask & (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) == XSTATE_YMM_MASK) {
+        goto do_gpf;
+    }
+
     /* Disallow enabling unimplemented features.  */
     cpu_x86_cpuid(env, 0x0d, 0, &ena_lo, &dummy, &dummy, &ena_hi);
     ena = ((uint64_t)ena_hi << 32) | ena_lo;
@@ -1539,16 +1640,76 @@ void update_mxcsr_status(CPUX86State *env)
     }
     set_float_rounding_mode(rnd_type, &env->sse_status);
 
+    set_float_exception_flags(
+        ((mxcsr & FPUS_IE) ? float_flag_invalid : 0) |
+        ((mxcsr & FPUS_DE) ? float_flag_input_denormal : 0) |
+        ((mxcsr & FPUS_ZE) ? float_flag_divbyzero : 0) |
+        ((mxcsr & FPUS_OE) ? float_flag_overflow : 0) |
+        ((mxcsr & FPUS_UE) ? float_flag_underflow : 0) |
+        ((mxcsr & FPUS_PE) ? float_flag_inexact : 0),
+        &env->sse_status);
+
     /* set denormals are zero */
     set_flush_inputs_to_zero((mxcsr & SSE_DAZ) ? 1 : 0, &env->sse_status);
 
     /* set flush to zero */
-    set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->fp_status);
+    set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->sse_status);
+}
+
+void update_mxcsr_from_sse_status(CPUX86State *env)
+{
+    int flags = get_float_exception_flags(&env->sse_status);
+
+    env->mxcsr |= ((flags & float_flag_invalid) ? FPUS_IE : 0) |
+                  ((flags & float_flag_input_denormal) &&
+                           !(env->mxcsr & SSE_DAZ)
+                       ? FPUS_DE
+                       : 0) |
+                  ((flags & float_flag_divbyzero) ? FPUS_ZE : 0) |
+                  ((flags & float_flag_overflow) ? FPUS_OE : 0) |
+                  ((flags & float_flag_underflow) ? FPUS_UE : 0) |
+                  ((flags & float_flag_inexact) ? FPUS_PE : 0) |
+                  ((flags & float_flag_output_denormal)
+                       ? (FPUS_UE | FPUS_PE)
+                       : 0);
+}
+
+void helper_update_mxcsr(CPUX86State *env)
+{
+    update_mxcsr_from_sse_status(env);
 }
 
 void helper_ldmxcsr(CPUX86State *env, uint32_t val)
 {
+    if (val & 0xffff0000U) {
+        raise_exception_ra(env, EXCP0D_GPF, GETPC());
+    }
     cpu_set_mxcsr(env, val);
+}
+
+void helper_vtest(CPUX86State *env, void *dptr, void *sptr,
+                  uint32_t element_bits)
+{
+    ZMMReg *d = dptr;
+    ZMMReg *s = sptr;
+    uint64_t zf = 0;
+    uint64_t cf = 0;
+
+    if (element_bits == 32) {
+        for (int i = 0; i < 4; i++) {
+            zf |= (s->ZMM_L(i) & d->ZMM_L(i)) & UINT32_C(0x80000000);
+            cf |= (s->ZMM_L(i) & ~d->ZMM_L(i)) & UINT32_C(0x80000000);
+        }
+    } else {
+        for (int i = 0; i < 2; i++) {
+            zf |= (s->ZMM_Q(i) & d->ZMM_Q(i)) &
+                  UINT64_C(0x8000000000000000);
+            cf |= (s->ZMM_Q(i) & ~d->ZMM_Q(i)) &
+                  UINT64_C(0x8000000000000000);
+        }
+    }
+
+    CC_SRC = (zf ? 0 : CC_Z) | (cf ? 0 : CC_C);
 }
 
 void helper_enter_mmx(CPUX86State *env)

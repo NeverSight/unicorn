@@ -157,6 +157,17 @@ enum {
     float_flag_output_denormal = 128
 };
 
+/*
+ * NaN propagation for two-input operations is architecture-specific.
+ * Keep the historical x87 rule as the zero value so existing status objects
+ * retain their previous behaviour unless a target explicitly selects another
+ * rule.
+ */
+typedef enum Float2NaNPropRule {
+    float_2nan_prop_x87 = 0,
+    float_2nan_prop_ab,
+} Float2NaNPropRule;
+
 
 /*
  * Floating Point Status. Individual architectures may maintain
@@ -177,6 +188,7 @@ typedef struct float_status {
     flag default_nan_mode;
     /* not always used -- see snan_bit_is_one() in softfloat-specialize.h */
     flag snan_bit_is_one;
+    signed char float_2nan_prop_rule;
 } float_status;
 
 #endif /* SOFTFLOAT_TYPES_H */

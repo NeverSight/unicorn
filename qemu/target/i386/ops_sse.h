@@ -889,8 +889,9 @@ SSE_HELPER_S(sqrt, FPU_SQRT)
 
 /* FMA3 fused multiply-add: d = round(a*b (+/-) c) with a SINGLE rounding.  The
  * decoder permutes the three sources into multiply/add order (a,b,c) per the
- * 132/213/231 form and passes a variant code (0 madd, 1 msub, 2 nmadd, 3 nmsub)
- * which selects the product/addend negations below.  d is the FMA dst operand,
+ * 132/213/231 form and passes a variant code (0 madd, 1 msub, 2 nmadd, 3 nmsub,
+ * 4 maddsub, 5 msubadd) which selects the product/addend negations below.  d is
+ * the FMA dst operand,
  * which is also one of a/b/c; each lane is read before it is written, so the
  * in-place update is safe even when d aliases a source. */
 static inline int fma_variant_flags(int v)
@@ -905,38 +906,118 @@ static inline int fma_variant_flags(int v)
     return f;
 }
 
+static inline int fma_packed_variant_flags(int variant, int element)
+{
+    if (variant == 4) {        /* maddsub: even subtract, odd add */
+        return (element & 1) ? 0 : float_muladd_negate_c;
+    }
+    if (variant == 5) {        /* msubadd: even add, odd subtract */
+        return (element & 1) ? float_muladd_negate_c : 0;
+    }
+    return fma_variant_flags(variant);
+}
+
+/* x86 applies MXCSR.FTZ after rounding and only when the rounded operation
+ * produces a subnormal.  Computing with softfloat FTZ disabled distinguishes
+ * a rounded subnormal (flush it and report underflow/precision) from a tiny
+ * intermediate that rounds back to normal (do not flush it). */
+static inline float32 x86_fma32(CPUX86State *env, float32 a, float32 b,
+                                float32 c, int flags)
+{
+    float_status *status = &env->sse_status;
+    flag ftz = get_flush_to_zero(status);
+    int old_flags;
+    int new_flags;
+    float32 result;
+
+    old_flags = get_float_exception_flags(status);
+    set_float_exception_flags(0, status);
+    if (ftz)
+        set_flush_to_zero(false, status);
+    result = float32_muladd(a, b, c, flags, status);
+    new_flags = get_float_exception_flags(status);
+    if (!get_flush_inputs_to_zero(status) &&
+        (((a & 0x7f800000U) == 0 && (a & 0x007fffffU) != 0) ||
+         ((b & 0x7f800000U) == 0 && (b & 0x007fffffU) != 0) ||
+         ((c & 0x7f800000U) == 0 && (c & 0x007fffffU) != 0))) {
+        new_flags |= float_flag_input_denormal;
+    }
+    if (ftz && (result & 0x7f800000U) == 0 &&
+        (result & 0x007fffffU) != 0) {
+        result &= 0x80000000U;
+        new_flags |= float_flag_output_denormal;
+    }
+    if (ftz)
+        set_flush_to_zero(true, status);
+    set_float_exception_flags(old_flags | new_flags, status);
+    return result;
+}
+
+static inline float64 x86_fma64(CPUX86State *env, float64 a, float64 b,
+                                float64 c, int flags)
+{
+    float_status *status = &env->sse_status;
+    flag ftz = get_flush_to_zero(status);
+    int old_flags;
+    int new_flags;
+    float64 result;
+
+    old_flags = get_float_exception_flags(status);
+    set_float_exception_flags(0, status);
+    if (ftz)
+        set_flush_to_zero(false, status);
+    result = float64_muladd(a, b, c, flags, status);
+    new_flags = get_float_exception_flags(status);
+    if (!get_flush_inputs_to_zero(status) &&
+        (((a & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (a & UINT64_C(0x000fffffffffffff)) != 0) ||
+         ((b & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (b & UINT64_C(0x000fffffffffffff)) != 0) ||
+         ((c & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (c & UINT64_C(0x000fffffffffffff)) != 0))) {
+        new_flags |= float_flag_input_denormal;
+    }
+    if (ftz && (result & UINT64_C(0x7ff0000000000000)) == 0 &&
+        (result & UINT64_C(0x000fffffffffffff)) != 0) {
+        result &= UINT64_C(0x8000000000000000);
+        new_flags |= float_flag_output_denormal;
+    }
+    if (ftz)
+        set_flush_to_zero(true, status);
+    set_float_exception_flags(old_flags | new_flags, status);
+    return result;
+}
+
 void helper_fma_ss(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
 {
     int flags = fma_variant_flags(variant);
-    d->ZMM_S(0) =
-        float32_muladd(a->ZMM_S(0), b->ZMM_S(0), c->ZMM_S(0), flags,
-                       &env->sse_status);
+    d->ZMM_S(0) = x86_fma32(env, a->ZMM_S(0), b->ZMM_S(0), c->ZMM_S(0),
+                            flags);
 }
 
 void helper_fma_sd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
 {
     int flags = fma_variant_flags(variant);
-    d->ZMM_D(0) =
-        float64_muladd(a->ZMM_D(0), b->ZMM_D(0), c->ZMM_D(0), flags,
-                       &env->sse_status);
+    d->ZMM_D(0) = x86_fma64(env, a->ZMM_D(0), b->ZMM_D(0), c->ZMM_D(0),
+                            flags);
 }
 
 void helper_fma_ps(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
 {
-    int flags = fma_variant_flags(variant);
-    for (int i = 0; i < 4; i++)
-        d->ZMM_S(i) =
-            float32_muladd(a->ZMM_S(i), b->ZMM_S(i), c->ZMM_S(i), flags,
-                           &env->sse_status);
+    for (int i = 0; i < 4; i++) {
+        int flags = fma_packed_variant_flags(variant, i);
+        d->ZMM_S(i) = x86_fma32(env, a->ZMM_S(i), b->ZMM_S(i), c->ZMM_S(i),
+                                flags);
+    }
 }
 
 void helper_fma_pd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
 {
-    int flags = fma_variant_flags(variant);
-    for (int i = 0; i < 2; i++)
-        d->ZMM_D(i) =
-            float64_muladd(a->ZMM_D(i), b->ZMM_D(i), c->ZMM_D(i), flags,
-                           &env->sse_status);
+    for (int i = 0; i < 2; i++) {
+        int flags = fma_packed_variant_flags(variant, i);
+        d->ZMM_D(i) = x86_fma64(env, a->ZMM_D(i), b->ZMM_D(i), c->ZMM_D(i),
+                                flags);
+    }
 }
 
 
@@ -997,10 +1078,16 @@ void helper_cvtph2ps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
     uint16_t h0 = s->ZMM_W(0), h1 = s->ZMM_W(1);
     uint16_t h2 = s->ZMM_W(2), h3 = s->ZMM_W(3);
+    flag previous_daz = get_flush_inputs_to_zero(&env->sse_status);
+
+    /* F16C widens every binary16 value exactly; MXCSR.DAZ applies to
+     * single/double inputs, not to the packed half source representation. */
+    set_flush_inputs_to_zero(false, &env->sse_status);
     d->ZMM_S(0) = float16_to_float32(h0, true, &env->sse_status);
     d->ZMM_S(1) = float16_to_float32(h1, true, &env->sse_status);
     d->ZMM_S(2) = float16_to_float32(h2, true, &env->sse_status);
     d->ZMM_S(3) = float16_to_float32(h3, true, &env->sse_status);
+    set_flush_inputs_to_zero(previous_daz, &env->sse_status);
 }
 
 /*
@@ -1013,12 +1100,42 @@ void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
 {
     float32 f0 = s->ZMM_S(0), f1 = s->ZMM_S(1);
     float32 f2 = s->ZMM_S(2), f3 = s->ZMM_S(3);
-    (void)imm;
+    signed char previous_rounding_mode = env->sse_status.float_rounding_mode;
+    flag previous_ftz = get_flush_to_zero(&env->sse_status);
+    int previous_flags = get_float_exception_flags(&env->sse_status);
+
+    if (!(imm & (1 << 2))) {
+        switch (imm & 3) {
+        case 0:
+            set_float_rounding_mode(float_round_nearest_even, &env->sse_status);
+            break;
+        case 1:
+            set_float_rounding_mode(float_round_down, &env->sse_status);
+            break;
+        case 2:
+            set_float_rounding_mode(float_round_up, &env->sse_status);
+            break;
+        case 3:
+            set_float_rounding_mode(float_round_to_zero, &env->sse_status);
+            break;
+        }
+    }
+    /* VCVTPS2PH always produces gradual-underflow half results; MXCSR.FTZ is
+     * explicitly ignored for this conversion. */
+    set_flush_to_zero(false, &env->sse_status);
     d->ZMM_W(0) = float32_to_float16(f0, true, &env->sse_status);
     d->ZMM_W(1) = float32_to_float16(f1, true, &env->sse_status);
     d->ZMM_W(2) = float32_to_float16(f2, true, &env->sse_status);
     d->ZMM_W(3) = float32_to_float16(f3, true, &env->sse_status);
     d->ZMM_Q(1) = 0;
+    if (imm & (1 << 3)) {
+        int flags = get_float_exception_flags(&env->sse_status);
+        flags = (flags & ~float_flag_inexact) |
+                (previous_flags & float_flag_inexact);
+        set_float_exception_flags(flags, &env->sse_status);
+    }
+    set_flush_to_zero(previous_ftz, &env->sse_status);
+    env->sse_status.float_rounding_mode = previous_rounding_mode;
 }
 
 void helper_cvtpi2ps(CPUX86State *env, ZMMReg *d, MMXReg *s)
@@ -1189,6 +1306,8 @@ int64_t helper_cvttsd2sq(CPUX86State *env, ZMMReg *s)
 
 void helper_rsqrtps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
                               &env->sse_status);
@@ -1201,26 +1320,36 @@ void helper_rsqrtps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     d->ZMM_S(3) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(3), &env->sse_status),
                               &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rsqrtss(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
                               &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rcpps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
     d->ZMM_S(1) = float32_div(float32_one, s->ZMM_S(1), &env->sse_status);
     d->ZMM_S(2) = float32_div(float32_one, s->ZMM_S(2), &env->sse_status);
     d->ZMM_S(3) = float32_div(float32_one, s->ZMM_S(3), &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rcpss(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 static inline uint64_t helper_extrq(uint64_t src, int shift, int len)

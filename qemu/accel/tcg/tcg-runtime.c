@@ -165,8 +165,22 @@ void HELPER(exit_atomic)(CPUArchState *env)
     cpu_loop_exit_atomic(env_cpu(env), GETPC());
 }
 
-void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
+void HELPER(check_exit_request)(void *p, target_ulong pc,
+                                uint32_t check_exit_address,
+                                uint32_t in_delay_slot) {
     uc_engine *uc = p;
+
+    /*
+     * Exit addresses are run-specific while translated blocks are cached.
+     * Check at execution time so a block chained during an earlier run cannot
+     * bypass a newly selected exit address.
+     */
+    if (check_exit_address && uc_addr_is_exit(uc, pc) && !in_delay_slot) {
+        uc->set_pc(uc, pc);
+        uc->cpu->halted = 1;
+        uc->cpu->exception_index = EXCP_HLT;
+        cpu_loop_exit(uc->cpu);
+    }
 
     if (cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
         // There are stil something we have to before exiting to be compatible with previous behaviors
