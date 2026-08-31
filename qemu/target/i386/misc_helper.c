@@ -23,6 +23,7 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/ioport.h"
+#include "qemu/host-utils.h"
 
 #include "uc_priv.h"
 #include "tcg/tcg-apple-jit.h"
@@ -944,9 +945,8 @@ void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
                                  ? env->regs[R_ECX] & 0xff
                                  : (unsigned int)immediate;
         const unsigned int extended_bits = bits + 1;
-        __uint128_t extended = ((__uint128_t)left << 1) |
-                               ((flags & CC_C) != 0);
-        __uint128_t extended_mask = ((__uint128_t)1 << extended_bits) - 1;
+        const uint64_t old_carry = (flags & CC_C) != 0;
+        bool carry;
 
         count &= width == 8 ? 63 : 31;
         if (width < 4) {
@@ -954,18 +954,21 @@ void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
         }
         if (count != 0) {
             if (operation == APX_SCALAR_RCL) {
-                extended = ((extended << count) |
-                            (extended >> (extended_bits - count))) &
-                           extended_mask;
+                result = ((left << count) & width_mask) |
+                         (old_carry << (count - 1));
+                if (count != 1) {
+                    result |= left >> (extended_bits - count);
+                }
+                carry = (left >> (bits - count)) & 1;
             } else {
-                extended = (extended >> count) |
-                           ((extended << (extended_bits - count)) &
-                            extended_mask);
+                result = (left >> count) |
+                         (old_carry << (bits - count));
+                if (count != 1) {
+                    result |= (left << (extended_bits - count)) & width_mask;
+                }
+                carry = (left >> (count - 1)) & 1;
             }
-            result = (uint64_t)(extended >> 1) & width_mask;
             if (!no_flags) {
-                const bool carry = extended & 1;
-
                 apx_scalar_set_flag(&flags, CC_C, carry);
                 if (count == 1) {
                     if (operation == APX_SCALAR_RCL) {
@@ -1075,11 +1078,14 @@ void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
         bool overflow;
 
         if (width == 8) {
-            const __int128 product = (__int128)(int64_t)left *
-                                     (__int128)(int64_t)right;
+            uint64_t product_low;
+            uint64_t product_high;
 
-            result = (uint64_t)product;
-            overflow = product != (__int128)(int64_t)result;
+            muls64(&product_low, &product_high, (int64_t)left,
+                   (int64_t)right);
+            result = product_low;
+            overflow = product_high !=
+                       ((result & sign_mask) ? UINT64_MAX : UINT64_C(0));
         } else {
             const int64_t product = apx_scalar_signed(left, width) *
                                     apx_scalar_signed(right, width);
@@ -1098,10 +1104,14 @@ void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
     case APX_SCALAR_ADOX: {
         const uint32_t chain_flag = operation == APX_SCALAR_ADCX ? CC_C : CC_O;
         const uint64_t carry = (flags & chain_flag) != 0;
-        const __uint128_t sum = (__uint128_t)left + right + carry;
+        const uint64_t partial = left + right;
+        const uint64_t sum = partial + carry;
+        const bool carry_out = width == 8
+                                   ? partial < left || sum < partial
+                                   : (sum >> bits) != 0;
 
-        result = (uint64_t)sum & width_mask;
-        apx_scalar_set_flag(&flags, chain_flag, (sum >> bits) != 0);
+        result = sum & width_mask;
+        apx_scalar_set_flag(&flags, chain_flag, carry_out);
         write_flags = true;
         break;
     }
@@ -1227,10 +1237,12 @@ void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
         const uint64_t multiplier = apx_scalar_read_gpr(env, R_EDX, width);
 
         if (width == 8) {
-            const __uint128_t product = (__uint128_t)multiplier * right;
+            uint64_t product_low;
+            uint64_t product_high;
 
-            apx_scalar_write_gpr(env, src1, width, (uint64_t)product);
-            result = (uint64_t)(product >> 64);
+            mulu64(&product_low, &product_high, multiplier, right);
+            apx_scalar_write_gpr(env, src1, width, product_low);
+            result = product_high;
         } else {
             const uint64_t product = multiplier * right;
 
