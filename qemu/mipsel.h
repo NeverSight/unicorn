@@ -375,6 +375,7 @@
 #define floatx80_sub floatx80_sub_mipsel
 #define floatx80_mul floatx80_mul_mipsel
 #define floatx80_div floatx80_div_mipsel
+#define floatx80_modrem floatx80_modrem_mipsel
 #define floatx80_rem floatx80_rem_mipsel
 #define floatx80_sqrt floatx80_sqrt_mipsel
 #define floatx80_eq floatx80_eq_mipsel

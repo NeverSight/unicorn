@@ -375,6 +375,7 @@
 #define floatx80_sub floatx80_sub_mips
 #define floatx80_mul floatx80_mul_mips
 #define floatx80_div floatx80_div_mips
+#define floatx80_modrem floatx80_modrem_mips
 #define floatx80_rem floatx80_rem_mips
 #define floatx80_sqrt floatx80_sqrt_mips
 #define floatx80_eq floatx80_eq_mips

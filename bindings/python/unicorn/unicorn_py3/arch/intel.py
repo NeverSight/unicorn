@@ -12,7 +12,7 @@ from unicorn.unicorn_const import UC_ERR_ARG, UC_HOOK_INSN
 
 # newly introduced unicorn imports
 from ..unicorn import Uc, UcError, uccallback
-from .types import uc_engine, UcTupledReg, UcReg128, UcReg256, UcReg512
+from .types import uc_engine, UcTupledReg, UcReg128, UcReg256, UcReg512, UcReg8192
 
 X86MMRReg = Tuple[int, int, int, int]
 X86MSRReg = Tuple[int, int]
@@ -77,6 +77,8 @@ class UcIntel(Uc):
     REG_RANGE_XMM = range(const.UC_X86_REG_XMM0, const.UC_X86_REG_XMM31 + 1)
     REG_RANGE_YMM = range(const.UC_X86_REG_YMM0, const.UC_X86_REG_YMM31 + 1)
     REG_RANGE_ZMM = range(const.UC_X86_REG_ZMM0, const.UC_X86_REG_ZMM31 + 1)
+    REG_RANGE_TILECFG = (const.UC_X86_REG_TILECFG,)
+    REG_RANGE_TMM = range(const.UC_X86_REG_TMM0, const.UC_X86_REG_TMM7 + 1)
 
     def hook_add(self, htype: int, callback: Callable, user_data: Any = None, begin: int = 1, end: int = 0, aux1: int = 0, aux2: int = 0) -> int:
         if htype != UC_HOOK_INSN:
@@ -140,7 +142,9 @@ class UcIntel(Uc):
             (UcIntel.REG_RANGE_FP,  UcRegFPR),
             (UcIntel.REG_RANGE_XMM, UcReg128),
             (UcIntel.REG_RANGE_YMM, UcReg256),
-            (UcIntel.REG_RANGE_ZMM, UcReg512)
+            (UcIntel.REG_RANGE_ZMM, UcReg512),
+            (UcIntel.REG_RANGE_TILECFG, UcReg512),
+            (UcIntel.REG_RANGE_TMM, UcReg8192)
         )
 
         return next((c for rng, c in reg_class if reg_id in rng), cls._DEFAULT_REGTYPE)

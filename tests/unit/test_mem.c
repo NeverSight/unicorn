@@ -60,6 +60,88 @@ static void test_mem_protect(void)
     OK(uc_close(qc));
 }
 
+static void test_memory_protection_without_hooks(void)
+{
+    static const uint8_t write_then_read[] = {
+        0xc6, 0x05, 0xff, 0x20, 0x00, 0x00, 0x55,
+        /* mov byte ptr [0x20ff], 0x55 */
+        0xa0, 0x00, 0x20, 0x00, 0x00,
+        /* mov al, byte ptr [0x2000] */
+    };
+    static const uint8_t read_then_write[] = {
+        0xa0, 0x00, 0x20, 0x00, 0x00,
+        /* mov al, byte ptr [0x2000] */
+        0xc6, 0x05, 0xff, 0x20, 0x00, 0x00, 0x55,
+        /* mov byte ptr [0x20ff], 0x55 */
+    };
+    static const struct {
+        const uint8_t *code;
+        size_t code_size;
+        uint32_t data_perms;
+        uc_err expected_error;
+        uint8_t expected_last_byte;
+    } cases[] = {
+        {write_then_read, sizeof(write_then_read),
+         UC_PROT_WRITE | UC_PROT_EXEC, UC_ERR_READ_PROT, 0x55},
+        {read_then_write, sizeof(read_then_write), UC_PROT_READ,
+         UC_ERR_WRITE_PROT, 0x11},
+        {write_then_read, sizeof(write_then_read),
+         UC_PROT_READ | UC_PROT_WRITE, UC_ERR_OK, 0x55},
+    };
+    const uint64_t code_address = 0x1000;
+    const uint64_t data_address = 0x2000;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const uint8_t initial_first_byte = 0x33;
+        const uint8_t initial_last_byte = 0x11;
+        uint8_t last_byte = 0;
+        uc_engine *uc;
+        uc_err err;
+
+        OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
+        OK(uc_mem_map(uc, code_address, 0x1000,
+                      UC_PROT_READ | UC_PROT_EXEC));
+        OK(uc_mem_map(uc, data_address, 0x1000, cases[i].data_perms));
+        OK(uc_mem_write(uc, code_address, cases[i].code,
+                        cases[i].code_size));
+        OK(uc_mem_write(uc, data_address, &initial_first_byte,
+                        sizeof(initial_first_byte)));
+        OK(uc_mem_write(uc, data_address + 0xff, &initial_last_byte,
+                        sizeof(initial_last_byte)));
+
+        err = uc_emu_start(uc, code_address,
+                           code_address + cases[i].code_size, 0, 0);
+        TEST_CHECK(err == cases[i].expected_error);
+        OK(uc_mem_read(uc, data_address + 0xff, &last_byte,
+                       sizeof(last_byte)));
+        TEST_CHECK(last_byte == cases[i].expected_last_byte);
+        OK(uc_close(uc));
+    }
+}
+
+static void test_cross_page_read_checks_each_page_permission(void)
+{
+    static const uint8_t code[] = {
+        0xa1, 0xfe, 0x2f, 0x00, 0x00,
+        /* mov eax, dword ptr [0x2ffe] */
+    };
+    static const uint8_t data[] = {0x11, 0x22, 0x33, 0x44};
+    uc_engine *uc;
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_32, &uc));
+    OK(uc_mem_map(uc, 0x1000, 0x1000,
+                  UC_PROT_READ | UC_PROT_EXEC));
+    OK(uc_mem_map(uc, 0x2000, 0x1000, UC_PROT_READ));
+    OK(uc_mem_map(uc, 0x3000, 0x1000, UC_PROT_WRITE));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+    OK(uc_mem_write(uc, 0x2ffe, data, sizeof(data)));
+
+    uc_assert_err(UC_ERR_READ_PROT,
+                  uc_emu_start(uc, 0x1000, 0, 0, 1));
+
+    OK(uc_close(uc));
+}
+
 static void test_splitting_mem_unmap(void)
 {
     uc_engine *uc;
@@ -592,6 +674,10 @@ static void test_virtual_write(void)
 TEST_LIST = {{"test_map_correct", test_map_correct},
              {"test_map_wrapping", test_map_wrapping},
              {"test_mem_protect", test_mem_protect},
+             {"test_memory_protection_without_hooks",
+              test_memory_protection_without_hooks},
+             {"test_cross_page_read_checks_each_page_permission",
+              test_cross_page_read_checks_each_page_permission},
              {"test_splitting_mem_unmap", test_splitting_mem_unmap},
              {"test_splitting_mmio_unmap", test_splitting_mmio_unmap},
              {"test_mem_protect_map_ptr", test_mem_protect_map_ptr},

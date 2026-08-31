@@ -531,6 +531,8 @@ add_library(x86_64-softmmu STATIC
     qemu/target/i386/cpu.c
     qemu/target/i386/excp_helper.c
     qemu/target/i386/fpu_helper.c
+    qemu/target/i386/approx_14.c
+    qemu/target/i386/approx_28.c
     qemu/target/i386/helper.c
     qemu/target/i386/int_helper.c
     qemu/target/i386/machine.c
@@ -1269,7 +1271,7 @@ if(UNICORN_HAS_X86)
     set(UNICORN_LINK_LIBRARIES ${UNICORN_LINK_LIBRARIES} x86_64-softmmu)
     set(UNICORN_SAMPLE_FILE ${UNICORN_SAMPLE_FILE} sample_x86 sample_x86_32_gdt_and_seg_regs sample_batch_reg mem_apis shellcode sample_mmu)
     target_link_libraries(x86_64-softmmu PRIVATE unicorn-common)
-    set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_x86)
+    set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_x86 test_x86_apx_state test_x86_approx14 test_x86_approx14_memory test_x86_approx28 test_x86_approx28_memory test_x86_vrange_vscalef test_x86_getexp_getmant)
 endif()
 if(UNICORN_HAS_ARM)
     set(UNICORN_COMPILE_OPTIONS ${UNICORN_COMPILE_OPTIONS} -DUNICORN_HAS_ARM)
@@ -1521,6 +1523,8 @@ endif()
 
 if(UNICORN_INSTALL)
     include("GNUInstallDirs")
+    set(UNICORN_LICENSE_INSTALL_DIR
+        "${CMAKE_INSTALL_DATADIR}/licenses/unicorn")
     file(GLOB UNICORN_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/include/unicorn/*.h)
     if (BUILD_SHARED_LIBS)
         install(TARGETS unicorn
@@ -1549,4 +1553,12 @@ Libs.private: -lpthread -lm${ATOMIC_LINK_PKG_CONFIG}\n\
 Cflags: -I\$\{includedir\}\n"
     )
     install(FILES ${CMAKE_BINARY_DIR}/unicorn.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+    install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/COPYING
+        ${CMAKE_CURRENT_SOURCE_DIR}/COPYING.LGPL2
+        ${CMAKE_CURRENT_SOURCE_DIR}/COPYING_GLIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/qemu/LICENSE
+        ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md
+        DESTINATION ${UNICORN_LICENSE_INSTALL_DIR}
+    )
 endif()

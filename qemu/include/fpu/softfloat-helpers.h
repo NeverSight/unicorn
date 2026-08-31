@@ -94,6 +94,12 @@ static inline void set_snan_bit_is_one(flag val, float_status *status)
     status->snan_bit_is_one = val;
 }
 
+static inline void set_float_2nan_prop_rule(Float2NaNPropRule rule,
+                                            float_status *status)
+{
+    status->float_2nan_prop_rule = rule;
+}
+
 static inline int get_float_detect_tininess(float_status *status)
 {
     return status->float_detect_tininess;
@@ -127,6 +133,12 @@ static inline flag get_flush_inputs_to_zero(float_status *status)
 static inline flag get_default_nan_mode(float_status *status)
 {
     return status->default_nan_mode;
+}
+
+static inline Float2NaNPropRule get_float_2nan_prop_rule(
+    float_status *status)
+{
+    return status->float_2nan_prop_rule;
 }
 
 #endif /* _SOFTFLOAT_HELPERS_H_ */

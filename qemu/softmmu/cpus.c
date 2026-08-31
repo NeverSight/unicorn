@@ -203,9 +203,31 @@ static inline gboolean uc_exit_invalidate_iter(gpointer key, gpointer val, gpoin
     return false;
 }
 
+static void uc_invalidate_exit_tbs(struct uc_struct *uc)
+{
+    if (uc->use_exits) {
+        g_tree_foreach(uc->ctl_exits, uc_exit_invalidate_iter, (void *)uc);
+    } else {
+        int active_levels = uc->nested_level;
+
+        /* A nested run can populate the cache with a TB that crosses an
+         * outer run's exit.  Invalidate every still-active exit before the
+         * outer run resumes, not only the innermost one. */
+        for (int level = 0; level < active_levels; level++) {
+            uc_exit_invalidate_iter((gpointer)&uc->exits[level], NULL,
+                                    (gpointer)uc);
+        }
+    }
+}
+
 void resume_all_vcpus(struct uc_struct* uc)
 {
     CPUState *cpu = uc->cpu;
+
+    /* Exit addresses are not part of a TB's cache key. Invalidate a TB that
+     * may have crossed a newly selected exit before looking it up. */
+    uc_invalidate_exit_tbs(uc);
+
     cpu->halted = 0;
     cpu->exit_request = 0;
     cpu->exception_index = -1;
@@ -221,11 +243,7 @@ void resume_all_vcpus(struct uc_struct* uc)
     // clear the cache of the exits address, since the generated code
     // at that address is to exit emulation, but not for the instruction there.
     // if we dont do this, next time we cannot emulate at that address
-    if (uc->use_exits) {
-        g_tree_foreach(uc->ctl_exits, uc_exit_invalidate_iter, (void*)uc);
-    } else {
-        uc_exit_invalidate_iter((gpointer)&uc->exits[uc->nested_level - 1], NULL, (gpointer)uc);
-    }
+    uc_invalidate_exit_tbs(uc);
 
     cpu->created = false;
 }

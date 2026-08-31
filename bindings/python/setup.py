@@ -20,6 +20,13 @@ HEADERS_DIR = os.path.join(ROOT_DIR, 'unicorn', 'include')
 SRC_DIR = os.path.join(ROOT_DIR, 'src')
 UC_DIR = SRC_DIR if os.path.exists(SRC_DIR) else os.path.join(ROOT_DIR, '../..')
 BUILD_DIR = os.path.join(UC_DIR, 'build_python')
+LICENSE_FILES = (
+    ('COPYING', 'COPYING'),
+    ('COPYING.LGPL2', 'COPYING.LGPL2'),
+    ('COPYING_GLIB', 'COPYING_GLIB'),
+    ('qemu/LICENSE', 'QEMU-LICENSE'),
+    ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md'),
+)
 
 if sys.platform == 'darwin':
     LIBRARY_FILE = "libunicorn.2.dylib"
@@ -35,6 +42,19 @@ else:
 def clean_bins():
     shutil.rmtree(LIBS_DIR, ignore_errors=True)
     shutil.rmtree(HEADERS_DIR, ignore_errors=True)
+
+
+def copy_license_files(build_root):
+    """Copy license materials into a wheel-visible package directory."""
+    licenses_dir = os.path.join(build_root, 'unicorn', 'licenses')
+    if not os.path.exists(licenses_dir):
+        os.makedirs(licenses_dir)
+
+    for source, destination in LICENSE_FILES:
+        shutil.copy(
+            os.path.join(UC_DIR, source),
+            os.path.join(licenses_dir, destination)
+        )
 
 
 def copy_sources():
@@ -65,6 +85,8 @@ def copy_sources():
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../*.[ch]")))
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../*.mk")))
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../LICENSE*")))
+    src.extend(glob.glob(os.path.join(ROOT_DIR, "../../COPYING*")))
+    src.extend(glob.glob(os.path.join(ROOT_DIR, "../../THIRD_PARTY_NOTICES.md")))
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../README.md")))
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../*.TXT")))
     src.extend(glob.glob(os.path.join(ROOT_DIR, "../../CMakeLists.txt")))
@@ -143,7 +165,9 @@ class CustomBuild(build_py):
         else:
             log.info("Building C extensions")
             build_libraries()
-        return super().run()
+        result = super().run()
+        copy_license_files(self.build_lib)
+        return result
 
 
 setup(

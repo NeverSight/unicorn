@@ -137,6 +137,23 @@ void raise_exception_ra(CPUX86State *env, int exception_index, uintptr_t retaddr
     raise_interrupt2(env, exception_index, 0, 0, 0, retaddr);
 }
 
+void QEMU_NORETURN helper_icebp(CPUX86State *env)
+{
+    CPUState *cs = env_cpu(env);
+
+    /* Complete the preceding instruction boundary just like gen_eob(). */
+    env->hflags &= ~HF_INHIBIT_IRQ_MASK;
+    env->eflags &= ~HF_RF_MASK;
+
+    /* ICEBP has its own SVM intercept.  Enter #DB directly so the generic
+     * exception path cannot issue a second SVM exception intercept. */
+    cs->exception_index = EXCP01_DB;
+    env->error_code = 0;
+    env->exception_is_int = 0;
+    env->exception_next_eip = env->eip;
+    cpu_loop_exit(cs);
+}
+
 static hwaddr get_hphys(CPUState *cs, hwaddr gphys, MMUAccessType access_type,
                         int *prot)
 {

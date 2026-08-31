@@ -21,6 +21,51 @@ X86_MMIO_CODE = b"\x89\x0d\x04\x00\x02\x00\x8b\x0d\x04\x00\x02\x00"  # mov [0x20
 ADDRESS = 0x1000000
 
 
+def test_apx_register_binding_constants_and_access():
+    for suffix, first in (("", UC_X86_REG_R16),
+                          ("B", UC_X86_REG_R16B),
+                          ("D", UC_X86_REG_R16D),
+                          ("W", UC_X86_REG_R16W)):
+        for index in range(16):
+            name = "UC_X86_REG_R%d%s" % (16 + index, suffix)
+            assert globals()[name] == first + index
+
+    assert UC_X86_REG_TILECFG == UC_X86_REG_R31W + 1
+
+    mu = Uc(UC_ARCH_X86, UC_MODE_64)
+    mu.reg_write(UC_X86_REG_R16, 0x8877665544332211)
+    assert mu.reg_read(UC_X86_REG_R16B) == 0x11
+    assert mu.reg_read(UC_X86_REG_R16W) == 0x2211
+    assert mu.reg_read(UC_X86_REG_R16D) == 0x44332211
+
+    mu.reg_write(UC_X86_REG_R31, 0x8877665544332211)
+    mu.reg_write(UC_X86_REG_R31B, 0x7a)
+    assert mu.reg_read(UC_X86_REG_R31) == 0x887766554433227a
+    mu.reg_write(UC_X86_REG_R31W, 0xe5f6)
+    assert mu.reg_read(UC_X86_REG_R31) == 0x887766554433e5f6
+    mu.reg_write(UC_X86_REG_R31D, 0xa1b2c3d4)
+    assert mu.reg_read(UC_X86_REG_R31) == 0xa1b2c3d4
+
+
+def test_amx_register_binding_constants_and_access():
+    assert UC_X86_REG_TMM0 == UC_X86_REG_TILECFG + 1
+    assert UC_X86_REG_TMM7 == UC_X86_REG_TMM0 + 7
+    assert UC_X86_REG_ENDING == UC_X86_REG_TMM7 + 1
+
+    tilecfg = int.from_bytes(bytes((i * 7 + 3) & 0xff for i in range(64)),
+                             byteorder="little")
+    tile = int.from_bytes(bytes((i * 13 + 5) & 0xff for i in range(1024)),
+                          byteorder="little")
+    mu = Uc(UC_ARCH_X86, UC_MODE_64)
+
+    assert mu.reg_read(UC_X86_REG_TILECFG) == 0
+    assert mu.reg_read(UC_X86_REG_TMM7) == 0
+    mu.reg_write(UC_X86_REG_TILECFG, tilecfg)
+    mu.reg_write(UC_X86_REG_TMM7, tile)
+    assert mu.reg_read(UC_X86_REG_TILECFG) == tilecfg
+    assert mu.reg_read(UC_X86_REG_TMM7) == tile
+
+
 # callback for tracing basic blocks
 def hook_block(uc, address, size, user_data):
     print(">>> Tracing basic block at 0x%x, block size = 0x%x" % (address, size))

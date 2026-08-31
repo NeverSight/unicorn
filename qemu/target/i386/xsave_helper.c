@@ -31,9 +31,16 @@ void x86_cpu_xsave_all_areas(X86CPU *cpu, X86XSaveArea *buf)
             sizeof env->fpregs);
     xsave->legacy.mxcsr = env->mxcsr;
     xsave->header.xstate_bv = env->xstate_bv;
-    memcpy(&xsave->bndreg_state.bnd_regs, env->bnd_regs,
-            sizeof env->bnd_regs);
-    xsave->bndcsr_state.bndcsr = env->bndcs_regs;
+    if (env->features[FEAT_7_1_EDX] & CPUID_7_1_EDX_APX_F) {
+#ifdef TARGET_X86_64
+        memcpy(xsave->apx_state.egprs, env->apx_regs,
+               sizeof env->apx_regs);
+#endif
+    } else {
+        memcpy(&xsave->bndreg_state.bnd_regs, env->bnd_regs,
+               sizeof env->bnd_regs);
+        xsave->bndcsr_state.bndcsr = env->bndcs_regs;
+    }
     memcpy(&xsave->opmask_state.opmask_regs, env->opmask_regs,
             sizeof env->opmask_regs);
 
@@ -83,9 +90,16 @@ void x86_cpu_xrstor_all_areas(X86CPU *cpu, const X86XSaveArea *buf)
     memcpy(env->fpregs, &xsave->legacy.fpregs,
             sizeof env->fpregs);
     env->xstate_bv = xsave->header.xstate_bv;
-    memcpy(env->bnd_regs, &xsave->bndreg_state.bnd_regs,
-            sizeof env->bnd_regs);
-    env->bndcs_regs = xsave->bndcsr_state.bndcsr;
+    if (env->features[FEAT_7_1_EDX] & CPUID_7_1_EDX_APX_F) {
+#ifdef TARGET_X86_64
+        memcpy(env->apx_regs, xsave->apx_state.egprs,
+               sizeof env->apx_regs);
+#endif
+    } else {
+        memcpy(env->bnd_regs, &xsave->bndreg_state.bnd_regs,
+               sizeof env->bnd_regs);
+        env->bndcs_regs = xsave->bndcsr_state.bndcsr;
+    }
     memcpy(env->opmask_regs, &xsave->opmask_state.opmask_regs,
             sizeof env->opmask_regs);
 

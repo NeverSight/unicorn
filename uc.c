@@ -1724,6 +1724,7 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
     uint64_t pc;
     uint64_t count, len;
     bool remove_exec = false;
+    bool permissions_changed = false;
 
     UC_INIT(uc);
 
@@ -1784,6 +1785,9 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
                 ((perms & UC_PROT_EXEC) == 0)) {
                 remove_exec = true;
             }
+            if (mr->perms != perms) {
+                permissions_changed = true;
+            }
             mr->perms = perms;
             uc->readonly_mem(mr, (perms & UC_PROT_WRITE) == 0);
 
@@ -1794,6 +1798,9 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
             }
 
             mr = uc->memory_mapping(uc, addr);
+            if (mr->perms != perms) {
+                permissions_changed = true;
+            }
             mr->perms = perms;
         }
 
@@ -1809,6 +1816,13 @@ uc_err uc_mem_protect(struct uc_struct *uc, uint64_t address, uint64_t size,
             uc->quit_request = true;
             uc_emu_stop(uc);
         }
+    }
+
+    /* TLB entries cache the fast-path read/write/execute permissions.  Flush
+     * after every real permission transition, including transitions where the
+     * QEMU readonly bit itself did not change. */
+    if (permissions_changed) {
+        uc->tcg_flush_tlb(uc);
     }
 
     restore_jit_state(uc);

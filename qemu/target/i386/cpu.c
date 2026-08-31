@@ -21,6 +21,7 @@
 #include "qemu/units.h"
 #include "qemu/cutils.h"
 #include "qemu/bitops.h"
+#include "fpu/softfloat.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
 #include "sysemu/cpus.h"
@@ -604,13 +605,14 @@ static CPUCacheInfo legacy_l3_cache = {
           CPUID_EXT_SSE41 | CPUID_EXT_SSE42 | CPUID_EXT_POPCNT | \
           CPUID_EXT_XSAVE | /* CPUID_EXT_OSXSAVE is dynamic */   \
           CPUID_EXT_MOVBE | CPUID_EXT_AES | CPUID_EXT_HYPERVISOR | \
-          CPUID_EXT_RDRAND)
-          /* missing:
+          CPUID_EXT_RDRAND | CPUID_EXT_F16C | CPUID_EXT_AVX | CPUID_EXT_FMA)
+          /* F16C (VCVTPH2PS/VCVTPS2PH) is emulated, so it is advertised and the
+             SSE-op-table F16C gate passes.
+             missing:
           CPUID_EXT_DTES64, CPUID_EXT_DSCPL, CPUID_EXT_VMX, CPUID_EXT_SMX,
-          CPUID_EXT_EST, CPUID_EXT_TM2, CPUID_EXT_CID, CPUID_EXT_FMA,
+          CPUID_EXT_EST, CPUID_EXT_TM2, CPUID_EXT_CID,
           CPUID_EXT_XTPR, CPUID_EXT_PDCM, CPUID_EXT_PCID, CPUID_EXT_DCA,
-          CPUID_EXT_X2APIC, CPUID_EXT_TSC_DEADLINE_TIMER, CPUID_EXT_AVX,
-          CPUID_EXT_F16C */
+          CPUID_EXT_X2APIC, CPUID_EXT_TSC_DEADLINE_TIMER */
 
 #ifdef TARGET_X86_64
 #define TCG_EXT2_X86_64_FEATURES (CPUID_EXT2_SYSCALL | CPUID_EXT2_LM)
@@ -627,20 +629,36 @@ static CPUCacheInfo legacy_l3_cache = {
 #define TCG_EXT4_FEATURES 0
 #define TCG_SVM_FEATURES CPUID_SVM_NPT
 #define TCG_KVM_FEATURES 0
+#ifdef TARGET_X86_64
+#define TCG_INVPCID_FEATURES CPUID_7_0_EBX_INVPCID
+#define TCG_ENQCMD_FEATURES CPUID_7_0_ECX_ENQCMD
+#else
+#define TCG_INVPCID_FEATURES 0
+#define TCG_ENQCMD_FEATURES 0
+#endif
 #define TCG_7_0_EBX_FEATURES (CPUID_7_0_EBX_SMEP | CPUID_7_0_EBX_SMAP | \
-          CPUID_7_0_EBX_BMI1 | CPUID_7_0_EBX_BMI2 | CPUID_7_0_EBX_ADX | \
+          CPUID_7_0_EBX_BMI1 | CPUID_7_0_EBX_BMI2 | CPUID_7_0_EBX_AVX2 | \
+          CPUID_7_0_EBX_ADX | TCG_INVPCID_FEATURES | \
+          CPUID_7_0_EBX_AVX512F | \
+          CPUID_7_0_EBX_AVX512DQ | CPUID_7_0_EBX_AVX512VL | \
           CPUID_7_0_EBX_PCOMMIT | CPUID_7_0_EBX_CLFLUSHOPT |            \
           CPUID_7_0_EBX_CLWB | CPUID_7_0_EBX_MPX | CPUID_7_0_EBX_FSGSBASE | \
-          CPUID_7_0_EBX_ERMS)
+          CPUID_7_0_EBX_ERMS | CPUID_7_0_EBX_SHA_NI | CPUID_7_0_EBX_RDSEED)
           /* missing:
-          CPUID_7_0_EBX_HLE, CPUID_7_0_EBX_AVX2,
-          CPUID_7_0_EBX_INVPCID, CPUID_7_0_EBX_RTM,
-          CPUID_7_0_EBX_RDSEED */
-#define TCG_7_0_ECX_FEATURES (CPUID_7_0_ECX_PKU | \
+          CPUID_7_0_EBX_HLE, CPUID_7_0_EBX_RTM */
+#define TCG_7_0_ECX_FEATURES (CPUID_7_0_ECX_PKU | CPUID_7_0_ECX_GFNI | \
+          CPUID_7_0_ECX_VPCLMULQDQ | CPUID_7_0_ECX_RDPID | \
+          CPUID_7_0_ECX_MOVDIRI | CPUID_7_0_ECX_MOVDIR64B | \
+          TCG_ENQCMD_FEATURES | \
           /* CPUID_7_0_ECX_OSPKE is dynamic */ \
           CPUID_7_0_ECX_LA57)
 #define TCG_7_0_EDX_FEATURES 0
-#define TCG_7_1_EAX_FEATURES 0
+#define TCG_7_1_EAX_FEATURES \
+    (CPUID_7_1_EAX_RAO_INT | CPUID_7_1_EAX_CMPCCXADD | \
+     CPUID_7_1_EAX_MOVRS)
+#define TCG_7_1_ECX_FEATURES CPUID_7_1_ECX_MSR_IMM
+#define TCG_7_1_EDX_FEATURES CPUID_7_1_EDX_APX_F
+#define TCG_29_0_EBX_FEATURES CPUID_29_0_EBX_NCI_NDD_NF
 #define TCG_APM_FEATURES 0
 #define TCG_6_EAX_FEATURES CPUID_6_EAX_ARAT
 #define TCG_XSAVE_FEATURES (CPUID_XSAVE_XSAVEOPT | CPUID_XSAVE_XGETBV1)
@@ -839,7 +857,7 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
             "la57", NULL, NULL, NULL,
             NULL, NULL, "rdpid", NULL,
             NULL, "cldemote", NULL, "movdiri",
-            "movdir64b", NULL, NULL, NULL,
+            "movdir64b", "enqcmd", NULL, NULL,
         },
         .cpuid = {
             .eax = 7,
@@ -870,8 +888,27 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
     [FEAT_7_1_EAX] = {
         .type = CPUID_FEATURE_WORD,
         .feat_names = {
+            NULL, NULL, NULL, "rao-int",
+            NULL, "avx512-bf16", NULL, "cmpccxadd",
             NULL, NULL, NULL, NULL,
-            NULL, "avx512-bf16", NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, "movrs",
+        },
+        .cpuid = {
+            .eax = 7,
+            .needs_ecx = true, .ecx = 1,
+            .reg = R_EAX,
+        },
+        .tcg_features = TCG_7_1_EAX_FEATURES,
+    },
+    [FEAT_7_1_ECX] = {
+        .type = CPUID_FEATURE_WORD,
+        .feat_names = {
+            NULL, NULL, NULL, NULL,
+            NULL, "msr-imm", NULL, NULL,
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
@@ -882,9 +919,47 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
         .cpuid = {
             .eax = 7,
             .needs_ecx = true, .ecx = 1,
-            .reg = R_EAX,
+            .reg = R_ECX,
         },
-        .tcg_features = TCG_7_1_EAX_FEATURES,
+        .tcg_features = TCG_7_1_ECX_FEATURES,
+    },
+    [FEAT_7_1_EDX] = {
+        .type = CPUID_FEATURE_WORD,
+        .feat_names = {
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, "user-msr",
+            NULL, NULL, NULL, NULL,
+            NULL, "apx-f", NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+        },
+        .cpuid = {
+            .eax = 7,
+            .needs_ecx = true, .ecx = 1,
+            .reg = R_EDX,
+        },
+        .tcg_features = TCG_7_1_EDX_FEATURES,
+    },
+    [FEAT_29_0_EBX] = {
+        .type = CPUID_FEATURE_WORD,
+        .feat_names = {
+            "apx-nci-ndd-nf", NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+        },
+        .cpuid = {
+            .eax = 0x29,
+            .needs_ecx = true, .ecx = 0,
+            .reg = R_EBX,
+        },
+        .tcg_features = TCG_29_0_EBX_FEATURES,
     },
     [FEAT_8000_0007_EDX] = {
         .type = CPUID_FEATURE_WORD,
@@ -1242,6 +1317,10 @@ static const ExtSaveArea x86_ext_save_areas[] = {
           { .feature = FEAT_7_0_ECX, .bits = CPUID_7_0_ECX_PKU,
             .offset = offsetof(X86XSaveArea, pkru_state),
             .size = sizeof(XSavePKRU) },
+    [XSTATE_APX_BIT] =
+          { .feature = FEAT_7_1_EDX, .bits = CPUID_7_1_EDX_APX_F,
+            .offset = offsetof(X86XSaveArea, apx_state),
+            .size = sizeof(XSaveAPX) },
 };
 
 static uint32_t xsave_area_size(uint64_t mask)
@@ -2261,7 +2340,9 @@ static X86CPUDefinition builtin_x86_defs[] = {
             CPUID_7_0_EBX_FSGSBASE | CPUID_7_0_EBX_BMI1 |
             CPUID_7_0_EBX_HLE | CPUID_7_0_EBX_AVX2 | CPUID_7_0_EBX_SMEP |
             CPUID_7_0_EBX_BMI2 | CPUID_7_0_EBX_ERMS | CPUID_7_0_EBX_INVPCID |
-            CPUID_7_0_EBX_RTM,
+            CPUID_7_0_EBX_RTM | CPUID_7_0_EBX_ADX | CPUID_7_0_EBX_RDSEED |
+            CPUID_7_0_EBX_SMAP | CPUID_7_0_EBX_CLFLUSHOPT |
+            CPUID_7_0_EBX_CLWB,
         .features[FEAT_XSAVE] =
             CPUID_XSAVE_XSAVEOPT,
         .features[FEAT_6_EAX] =
@@ -2994,7 +3075,7 @@ static X86CPUDefinition builtin_x86_defs[] = {
             CPUID_7_0_ECX_AVX512_VBMI2 | CPUID_7_0_ECX_GFNI |
             CPUID_7_0_ECX_VAES | CPUID_7_0_ECX_VPCLMULQDQ |
             CPUID_7_0_ECX_AVX512VNNI | CPUID_7_0_ECX_AVX512BITALG |
-            CPUID_7_0_ECX_AVX512_VPOPCNTDQ,
+            CPUID_7_0_ECX_AVX512_VPOPCNTDQ | CPUID_7_0_ECX_RDPID,
         .features[FEAT_7_0_EDX] =
             CPUID_7_0_EDX_SPEC_CTRL | CPUID_7_0_EDX_SPEC_CTRL_SSBD,
         /* Missing: XSAVES (not supported by some Linux versions,
@@ -3110,7 +3191,8 @@ static X86CPUDefinition builtin_x86_defs[] = {
             CPUID_7_0_ECX_AVX512_VBMI2 | CPUID_7_0_ECX_GFNI |
             CPUID_7_0_ECX_VAES | CPUID_7_0_ECX_VPCLMULQDQ |
             CPUID_7_0_ECX_AVX512VNNI | CPUID_7_0_ECX_AVX512BITALG |
-            CPUID_7_0_ECX_AVX512_VPOPCNTDQ | CPUID_7_0_ECX_LA57,
+            CPUID_7_0_ECX_AVX512_VPOPCNTDQ | CPUID_7_0_ECX_LA57 |
+            CPUID_7_0_ECX_RDPID,
         .features[FEAT_7_0_EDX] =
             CPUID_7_0_EDX_SPEC_CTRL | CPUID_7_0_EDX_SPEC_CTRL_SSBD,
         /* Missing: XSAVES (not supported by some Linux versions,
@@ -3780,6 +3862,54 @@ static X86CPUDefinition builtin_x86_defs[] = {
         .cache_info = &epyc_rome_cache_info,
         .use_epyc_apic_id_encoding = 1,
     },
+    {
+        .name = "APX",
+        .level = 0x29,
+        .vendor = CPUID_VENDOR_INTEL,
+        .family = 6,
+        .model = 0,
+        .stepping = 0,
+        .features[FEAT_1_EDX] =
+            CPUID_VME | CPUID_SSE2 | CPUID_SSE | CPUID_FXSR | CPUID_MMX |
+            CPUID_CLFLUSH | CPUID_PSE36 | CPUID_PAT | CPUID_CMOV | CPUID_MCA |
+            CPUID_PGE | CPUID_MTRR | CPUID_SEP | CPUID_APIC | CPUID_CX8 |
+            CPUID_MCE | CPUID_PAE | CPUID_MSR | CPUID_TSC | CPUID_PSE |
+            CPUID_DE | CPUID_FP87,
+        .features[FEAT_1_ECX] =
+            CPUID_EXT_AVX | CPUID_EXT_XSAVE | CPUID_EXT_AES |
+            CPUID_EXT_POPCNT | CPUID_EXT_SSE42 | CPUID_EXT_SSE41 |
+            CPUID_EXT_CX16 | CPUID_EXT_SSSE3 | CPUID_EXT_PCLMULQDQ |
+            CPUID_EXT_SSE3 | CPUID_EXT_FMA | CPUID_EXT_MOVBE |
+            CPUID_EXT_F16C | CPUID_EXT_RDRAND,
+        .features[FEAT_7_0_EBX] =
+            CPUID_7_0_EBX_FSGSBASE | CPUID_7_0_EBX_BMI1 |
+            CPUID_7_0_EBX_AVX2 | CPUID_7_0_EBX_SMEP |
+            CPUID_7_0_EBX_BMI2 | CPUID_7_0_EBX_ERMS |
+            CPUID_7_0_EBX_ADX | CPUID_7_0_EBX_RDSEED |
+            CPUID_7_0_EBX_SMAP | CPUID_7_0_EBX_CLFLUSHOPT |
+            CPUID_7_0_EBX_CLWB | CPUID_7_0_EBX_AVX512F |
+            CPUID_7_0_EBX_AVX512DQ | CPUID_7_0_EBX_AVX512VL |
+            CPUID_7_0_EBX_INVPCID,
+        .features[FEAT_7_0_ECX] =
+            CPUID_7_0_ECX_MOVDIRI | CPUID_7_0_ECX_MOVDIR64B |
+            TCG_ENQCMD_FEATURES,
+        .features[FEAT_7_1_EAX] =
+            CPUID_7_1_EAX_RAO_INT | CPUID_7_1_EAX_CMPCCXADD |
+            CPUID_7_1_EAX_MOVRS,
+        .features[FEAT_7_1_ECX] = CPUID_7_1_ECX_MSR_IMM,
+        .features[FEAT_7_1_EDX] = CPUID_7_1_EDX_APX_F,
+        .features[FEAT_29_0_EBX] = CPUID_29_0_EBX_NCI_NDD_NF,
+        .features[FEAT_8000_0001_EDX] =
+            CPUID_EXT2_LM | CPUID_EXT2_RDTSCP | CPUID_EXT2_NX |
+            CPUID_EXT2_SYSCALL,
+        .features[FEAT_8000_0001_ECX] =
+            CPUID_EXT3_ABM | CPUID_EXT3_LAHF_LM,
+        .features[FEAT_XSAVE] =
+            CPUID_XSAVE_XSAVEOPT | CPUID_XSAVE_XGETBV1,
+        .features[FEAT_6_EAX] = CPUID_6_EAX_ARAT,
+        .xlevel = 0x80000008,
+        .model_id = "Unicorn APX Reference CPU",
+    },
 };
 
 
@@ -4130,8 +4260,8 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
         } else if (count == 1) {
             *eax = env->features[FEAT_7_1_EAX];
             *ebx = 0;
-            *ecx = 0;
-            *edx = 0;
+            *ecx = env->features[FEAT_7_1_ECX];
+            *edx = env->features[FEAT_7_1_EDX];
         } else {
             *eax = 0;
             *ebx = 0;
@@ -4215,6 +4345,13 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
         }
         assert(!(*eax & ~0x1f));
         *ebx &= 0xffff; /* The count doesn't need to be reliable. */
+        break;
+    case 0x29:
+        /* Intel Advanced Performance Extensions Enumeration Leaf */
+        *eax = 0;
+        *ebx = count == 0 ? env->features[FEAT_29_0_EBX] : 0;
+        *ecx = 0;
+        *edx = 0;
         break;
     case 0xD: {
         /* Processor Extended State */
@@ -4519,6 +4656,9 @@ static void x86_cpu_reset(CPUState *dev)
     for (i = 0; i < 8; i++) {
         env->fptags[i] = 1;
     }
+    set_float_2nan_prop_rule(float_2nan_prop_x87, &env->fp_status);
+    set_float_2nan_prop_rule(float_2nan_prop_x87, &env->mmx_status);
+    set_float_2nan_prop_rule(float_2nan_prop_ab, &env->sse_status);
     cpu_set_fpuc(env, 0x37f);
 
     env->mxcsr = 0x1f80;
@@ -4638,6 +4778,12 @@ static void x86_cpu_enable_xsave_components(X86CPU *cpu)
         return;
     }
 
+    /* APX reuses the retired MPX save-area bytes and cannot coexist with
+     * MPX enumeration in one CPU model. */
+    if (env->features[FEAT_7_1_EDX] & CPUID_7_1_EDX_APX_F) {
+        env->features[FEAT_7_0_EBX] &= ~CPUID_7_0_EBX_MPX;
+    }
+
     mask = 0;
     for (i = 0; i < ARRAY_SIZE(x86_ext_save_areas); i++) {
         const ExtSaveArea *esa = &x86_ext_save_areas[i];
@@ -4724,6 +4870,9 @@ static void x86_cpu_expand_features(X86CPU *cpu)
         x86_cpu_adjust_feat_level(cpu, FEAT_6_EAX);
         x86_cpu_adjust_feat_level(cpu, FEAT_7_0_ECX);
         x86_cpu_adjust_feat_level(cpu, FEAT_7_1_EAX);
+        x86_cpu_adjust_feat_level(cpu, FEAT_7_1_ECX);
+        x86_cpu_adjust_feat_level(cpu, FEAT_7_1_EDX);
+        x86_cpu_adjust_feat_level(cpu, FEAT_29_0_EBX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0001_EDX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0001_ECX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0007_EDX);
@@ -5054,6 +5203,7 @@ static void x86_cpu_common_class_init(struct uc_struct *uc, CPUClass *oc, void *
     cc->reset = x86_cpu_reset;
     cc->has_work = x86_cpu_has_work;
     cc->do_interrupt = x86_cpu_do_interrupt;
+    cc->do_unaligned_access = x86_cpu_do_unaligned_access;
     cc->cpu_exec_interrupt = x86_cpu_exec_interrupt;
     cc->set_pc = x86_cpu_set_pc;
     cc->synchronize_from_tb = x86_cpu_synchronize_from_tb;

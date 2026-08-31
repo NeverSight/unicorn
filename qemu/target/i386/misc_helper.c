@@ -303,26 +303,23 @@ void helper_rdtscp(CPUX86State *env)
 
 void helper_rdpmc(CPUX86State *env)
 {
-    if ((env->cr[4] & CR4_PCE_MASK) && ((env->hflags & HF_CPL_MASK) != 0)) {
+    if (!(env->cr[4] & CR4_PCE_MASK) &&
+        ((env->hflags & HF_CPL_MASK) != 0)) {
         raise_exception_ra(env, EXCP0D_GPF, GETPC());
     }
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDPMC, 0, GETPC());
 
-    /* currently unimplemented */
-    qemu_log_mask(LOG_UNIMP, "x86: unimplemented rdpmc\n");
-    raise_exception_err(env, EXCP06_ILLOP, 0);
+    /* CPUID.0AH advertises no architectural PMU, so every selector is
+     * unsupported.  Fail closed instead of fabricating a counter value. */
+    raise_exception_ra(env, EXCP0D_GPF, GETPC());
 }
 
-void helper_wrmsr(CPUX86State *env)
+static void x86_msr_write(CPUX86State *env, uint32_t index, uint64_t val,
+                          uintptr_t retaddr)
 {
-    uint64_t val;
+    cpu_svm_check_intercept_param(env, SVM_EXIT_MSR, 1, retaddr);
 
-    cpu_svm_check_intercept_param(env, SVM_EXIT_MSR, 1, GETPC());
-
-    val = ((uint32_t)env->regs[R_EAX]) |
-        ((uint64_t)((uint32_t)env->regs[R_EDX]) << 32);
-
-    switch ((uint32_t)env->regs[R_ECX]) {
+    switch (index) {
     case MSR_IA32_SYSENTER_CS:
         env->sysenter_cs = val & 0xffff;
         break;
@@ -399,8 +396,7 @@ void helper_wrmsr(CPUX86State *env)
     case MSR_MTRRphysBase(5):
     case MSR_MTRRphysBase(6):
     case MSR_MTRRphysBase(7):
-        env->mtrr_var[((uint32_t)env->regs[R_ECX] -
-                       MSR_MTRRphysBase(0)) / 2].base = val;
+        env->mtrr_var[(index - MSR_MTRRphysBase(0)) / 2].base = val;
         break;
     case MSR_MTRRphysMask(0):
     case MSR_MTRRphysMask(1):
@@ -410,17 +406,14 @@ void helper_wrmsr(CPUX86State *env)
     case MSR_MTRRphysMask(5):
     case MSR_MTRRphysMask(6):
     case MSR_MTRRphysMask(7):
-        env->mtrr_var[((uint32_t)env->regs[R_ECX] -
-                       MSR_MTRRphysMask(0)) / 2].mask = val;
+        env->mtrr_var[(index - MSR_MTRRphysMask(0)) / 2].mask = val;
         break;
     case MSR_MTRRfix64K_00000:
-        env->mtrr_fixed[(uint32_t)env->regs[R_ECX] -
-                        MSR_MTRRfix64K_00000] = val;
+        env->mtrr_fixed[index - MSR_MTRRfix64K_00000] = val;
         break;
     case MSR_MTRRfix16K_80000:
     case MSR_MTRRfix16K_A0000:
-        env->mtrr_fixed[(uint32_t)env->regs[R_ECX] -
-                        MSR_MTRRfix16K_80000 + 1] = val;
+        env->mtrr_fixed[index - MSR_MTRRfix16K_80000 + 1] = val;
         break;
     case MSR_MTRRfix4K_C0000:
     case MSR_MTRRfix4K_C8000:
@@ -430,8 +423,7 @@ void helper_wrmsr(CPUX86State *env)
     case MSR_MTRRfix4K_E8000:
     case MSR_MTRRfix4K_F0000:
     case MSR_MTRRfix4K_F8000:
-        env->mtrr_fixed[(uint32_t)env->regs[R_ECX] -
-                        MSR_MTRRfix4K_C0000 + 3] = val;
+        env->mtrr_fixed[index - MSR_MTRRfix4K_C0000 + 3] = val;
         break;
     case MSR_MTRRdefType:
         env->mtrr_deftype = val;
@@ -451,6 +443,13 @@ void helper_wrmsr(CPUX86State *env)
     case MSR_IA32_MISC_ENABLE:
         env->msr_ia32_misc_enable = val;
         break;
+    case MSR_IA32_PASID:
+        if (!(env->features[FEAT_7_0_ECX] & CPUID_7_0_ECX_ENQCMD) ||
+            (val & ~UINT64_C(0x800fffff))) {
+            raise_exception_err_ra(env, EXCP0D_GPF, 0, retaddr);
+        }
+        env->msr_ia32_pasid = val;
+        break;
     case MSR_IA32_BNDCFGS:
         /* FIXME: #GP if reserved bits are set.  */
         /* FIXME: Extend highest implemented bit of linear address.  */
@@ -458,29 +457,37 @@ void helper_wrmsr(CPUX86State *env)
         cpu_sync_bndcs_hflags(env);
         break;
     default:
-        if ((uint32_t)env->regs[R_ECX] >= MSR_MC0_CTL
-            && (uint32_t)env->regs[R_ECX] < MSR_MC0_CTL +
+        if (index >= MSR_MC0_CTL
+            && index < MSR_MC0_CTL +
             (4 * env->mcg_cap & 0xff)) {
-            uint32_t offset = (uint32_t)env->regs[R_ECX] - MSR_MC0_CTL;
+            uint32_t offset = index - MSR_MC0_CTL;
             if ((offset & 0x3) != 0
                 || (val == 0 || val == ~(uint64_t)0)) {
                 env->mce_banks[offset] = val;
             }
             break;
         }
-        /* XXX: exception? */
-        break;
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, retaddr);
     }
 }
 
-void helper_rdmsr(CPUX86State *env)
+void helper_wrmsr(CPUX86State *env)
+{
+    const uint64_t val = ((uint32_t)env->regs[R_EAX]) |
+                         ((uint64_t)(uint32_t)env->regs[R_EDX] << 32);
+
+    x86_msr_write(env, (uint32_t)env->regs[R_ECX], val, GETPC());
+}
+
+static uint64_t x86_msr_read(CPUX86State *env, uint32_t index,
+                             uintptr_t retaddr)
 {
     X86CPU *x86_cpu = env_archcpu(env);
     uint64_t val;
 
-    cpu_svm_check_intercept_param(env, SVM_EXIT_MSR, 0, GETPC());
+    cpu_svm_check_intercept_param(env, SVM_EXIT_MSR, 0, retaddr);
 
-    switch ((uint32_t)env->regs[R_ECX]) {
+    switch (index) {
     case MSR_IA32_SYSENTER_CS:
         val = env->sysenter_cs;
         break;
@@ -545,8 +552,7 @@ void helper_rdmsr(CPUX86State *env)
     case MSR_MTRRphysBase(5):
     case MSR_MTRRphysBase(6):
     case MSR_MTRRphysBase(7):
-        val = env->mtrr_var[((uint32_t)env->regs[R_ECX] -
-                             MSR_MTRRphysBase(0)) / 2].base;
+        val = env->mtrr_var[(index - MSR_MTRRphysBase(0)) / 2].base;
         break;
     case MSR_MTRRphysMask(0):
     case MSR_MTRRphysMask(1):
@@ -556,16 +562,14 @@ void helper_rdmsr(CPUX86State *env)
     case MSR_MTRRphysMask(5):
     case MSR_MTRRphysMask(6):
     case MSR_MTRRphysMask(7):
-        val = env->mtrr_var[((uint32_t)env->regs[R_ECX] -
-                             MSR_MTRRphysMask(0)) / 2].mask;
+        val = env->mtrr_var[(index - MSR_MTRRphysMask(0)) / 2].mask;
         break;
     case MSR_MTRRfix64K_00000:
         val = env->mtrr_fixed[0];
         break;
     case MSR_MTRRfix16K_80000:
     case MSR_MTRRfix16K_A0000:
-        val = env->mtrr_fixed[(uint32_t)env->regs[R_ECX] -
-                              MSR_MTRRfix16K_80000 + 1];
+        val = env->mtrr_fixed[index - MSR_MTRRfix16K_80000 + 1];
         break;
     case MSR_MTRRfix4K_C0000:
     case MSR_MTRRfix4K_C8000:
@@ -575,8 +579,7 @@ void helper_rdmsr(CPUX86State *env)
     case MSR_MTRRfix4K_E8000:
     case MSR_MTRRfix4K_F0000:
     case MSR_MTRRfix4K_F8000:
-        val = env->mtrr_fixed[(uint32_t)env->regs[R_ECX] -
-                              MSR_MTRRfix4K_C0000 + 3];
+        val = env->mtrr_fixed[index - MSR_MTRRfix4K_C0000 + 3];
         break;
     case MSR_MTRRdefType:
         val = env->mtrr_deftype;
@@ -606,6 +609,12 @@ void helper_rdmsr(CPUX86State *env)
     case MSR_IA32_MISC_ENABLE:
         val = env->msr_ia32_misc_enable;
         break;
+    case MSR_IA32_PASID:
+        if (!(env->features[FEAT_7_0_ECX] & CPUID_7_0_ECX_ENQCMD)) {
+            raise_exception_err_ra(env, EXCP0D_GPF, 0, retaddr);
+        }
+        val = env->msr_ia32_pasid;
+        break;
     case MSR_IA32_BNDCFGS:
         val = env->msr_bndcfgs;
         break;
@@ -613,20 +622,38 @@ void helper_rdmsr(CPUX86State *env)
         val = x86_cpu->ucode_rev;
         break;
     default:
-        if ((uint32_t)env->regs[R_ECX] >= MSR_MC0_CTL
-            && (uint32_t)env->regs[R_ECX] < MSR_MC0_CTL +
+        if (index >= MSR_MC0_CTL
+            && index < MSR_MC0_CTL +
             (4 * env->mcg_cap & 0xff)) {
-            uint32_t offset = (uint32_t)env->regs[R_ECX] - MSR_MC0_CTL;
+            uint32_t offset = index - MSR_MC0_CTL;
             val = env->mce_banks[offset];
             break;
         }
-        /* XXX: exception? */
-        val = 0;
-        break;
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, retaddr);
     }
+    return val;
+}
+
+void helper_rdmsr(CPUX86State *env)
+{
+    const uint64_t val =
+        x86_msr_read(env, (uint32_t)env->regs[R_ECX], GETPC());
+
     env->regs[R_EAX] = (uint32_t)(val);
     env->regs[R_EDX] = (uint32_t)(val >> 32);
 }
+
+#ifdef TARGET_X86_64
+uint64_t helper_apx_rdmsr_imm(CPUX86State *env, uint32_t index)
+{
+    return x86_msr_read(env, index, GETPC());
+}
+
+void helper_apx_wrmsr_imm(CPUX86State *env, uint32_t index, uint64_t value)
+{
+    x86_msr_write(env, index, value, GETPC());
+}
+#endif
 
 static void do_pause(X86CPU *cpu)
 {
@@ -705,6 +732,523 @@ void helper_debug(CPUX86State *env)
     cs->exception_index = EXCP_DEBUG;
     cpu_loop_exit(cs);
 }
+
+#ifdef TARGET_X86_64
+void helper_apx_jmpabs(CPUX86State *env, uint64_t target)
+{
+    const int shift = (env->cr[4] & CR4_LA57_MASK) ? 56 : 47;
+    const int64_t sign_extension = (int64_t)target >> shift;
+
+    if (sign_extension != 0 && sign_extension != -1) {
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, GETPC());
+    }
+    env->eip = target;
+}
+
+static uint64_t apx_scalar_width_mask(int width)
+{
+    return width == 8 ? UINT64_MAX : (UINT64_C(1) << (width * 8)) - 1;
+}
+
+static uint64_t apx_scalar_read_gpr(CPUX86State *env, int reg, int width)
+{
+    const uint64_t value = reg < 16 ? env->regs[reg]
+                                    : env->apx_regs[reg - 16];
+
+    return value & apx_scalar_width_mask(width);
+}
+
+static void apx_scalar_write_gpr(CPUX86State *env, int reg, int width,
+                                 uint64_t value)
+{
+    uint64_t *slot = reg < 16 ? &env->regs[reg]
+                              : &env->apx_regs[reg - 16];
+
+    value &= apx_scalar_width_mask(width);
+    if (width < 4) {
+        const uint64_t mask = apx_scalar_width_mask(width);
+
+        *slot = (*slot & ~mask) | value;
+    } else {
+        *slot = value;
+    }
+    if (reg >= 16) {
+        env->xstate_bv |= XSTATE_APX_MASK;
+    }
+}
+
+static int64_t apx_scalar_signed(uint64_t value, int width)
+{
+    switch (width) {
+    case 1:
+        return (int8_t)value;
+    case 2:
+        return (int16_t)value;
+    case 4:
+        return (int32_t)value;
+    default:
+        return (int64_t)value;
+    }
+}
+
+static void apx_scalar_set_flag(uint32_t *flags, uint32_t mask, bool value)
+{
+    if (value) {
+        *flags |= mask;
+    } else {
+        *flags &= ~mask;
+    }
+}
+
+static uint32_t apx_scalar_szp_flags(uint32_t flags, uint64_t result,
+                                     int width)
+{
+    const uint64_t mask = apx_scalar_width_mask(width);
+    const uint64_t sign = UINT64_C(1) << (width * 8 - 1);
+
+    result &= mask;
+    flags &= ~(CC_S | CC_Z | CC_P);
+    if (result & sign) {
+        flags |= CC_S;
+    }
+    if (result == 0) {
+        flags |= CC_Z;
+    }
+    flags |= parity_table[result & 0xff];
+    return flags;
+}
+
+static uint64_t apx_scalar_pdep(uint64_t source, uint64_t mask, int width)
+{
+    uint64_t result = 0;
+    unsigned int source_bit = 0;
+
+    mask &= apx_scalar_width_mask(width);
+    for (unsigned int bit = 0; bit < (unsigned int)width * 8; ++bit) {
+        if ((mask >> bit) & 1) {
+            result |= ((source >> source_bit) & 1) << bit;
+            ++source_bit;
+        }
+    }
+    return result;
+}
+
+static uint64_t apx_scalar_pext(uint64_t source, uint64_t mask, int width)
+{
+    uint64_t result = 0;
+    unsigned int destination_bit = 0;
+
+    mask &= apx_scalar_width_mask(width);
+    for (unsigned int bit = 0; bit < (unsigned int)width * 8; ++bit) {
+        if ((mask >> bit) & 1) {
+            result |= ((source >> bit) & 1) << destination_bit;
+            ++destination_bit;
+        }
+    }
+    return result;
+}
+
+void helper_apx_scalar_reg(CPUX86State *env, uint32_t desc,
+                           uint64_t immediate)
+{
+    const int dst = (desc >> APX_SCALAR_DST_SHIFT) & APX_SCALAR_REG_MASK;
+    const int src1 = (desc >> APX_SCALAR_SRC1_SHIFT) & APX_SCALAR_REG_MASK;
+    const int src2 = (desc >> APX_SCALAR_SRC2_SHIFT) & APX_SCALAR_REG_MASK;
+    const int width = 1 << ((desc >> APX_SCALAR_WIDTH_SHIFT) & 3);
+    const unsigned int bits = width * 8;
+    const uint64_t width_mask = apx_scalar_width_mask(width);
+    const uint64_t sign_mask = UINT64_C(1) << (bits - 1);
+    const APXScalarOp operation =
+        (desc >> APX_SCALAR_OP_SHIFT) & APX_SCALAR_OP_MASK;
+    const bool no_flags = (desc & APX_SCALAR_NO_FLAGS) != 0;
+    const uint64_t left = apx_scalar_read_gpr(env, src1, width);
+    const uint64_t right = apx_scalar_read_gpr(env, src2, width);
+    uint32_t flags = cpu_compute_eflags(env);
+    uint64_t result = left;
+    bool write_flags = false;
+
+    switch (operation) {
+    case APX_SCALAR_INC:
+    case APX_SCALAR_DEC: {
+        const bool decrement = operation == APX_SCALAR_DEC;
+
+        result = (left + (decrement ? width_mask : 1)) & width_mask;
+        if (!no_flags) {
+            flags = apx_scalar_szp_flags(flags, result, width);
+            apx_scalar_set_flag(&flags, CC_A,
+                                ((left ^ UINT64_C(1) ^ result) & 0x10) != 0);
+            apx_scalar_set_flag(&flags, CC_O,
+                                decrement ? left == sign_mask
+                                          : left == sign_mask - 1);
+            write_flags = true;
+        }
+        break;
+    }
+    case APX_SCALAR_NOT:
+        result = ~left & width_mask;
+        break;
+    case APX_SCALAR_NEG:
+        result = (UINT64_C(0) - left) & width_mask;
+        if (!no_flags) {
+            flags = apx_scalar_szp_flags(flags, result, width);
+            apx_scalar_set_flag(&flags, CC_C, left != 0);
+            apx_scalar_set_flag(&flags, CC_A,
+                                ((left ^ result) & 0x10) != 0);
+            apx_scalar_set_flag(&flags, CC_O, left == sign_mask);
+            write_flags = true;
+        }
+        break;
+    case APX_SCALAR_ROL:
+    case APX_SCALAR_ROR: {
+        unsigned int count = (desc & APX_SCALAR_COUNT_CL)
+                                 ? env->regs[R_ECX] & 0xff
+                                 : (unsigned int)immediate;
+
+        count &= width == 8 ? 63 : 31;
+        count %= bits;
+        if (count != 0) {
+            if (operation == APX_SCALAR_ROL) {
+                result = ((left << count) | (left >> (bits - count))) &
+                         width_mask;
+                if (!no_flags) {
+                    const bool carry = result & 1;
+
+                    apx_scalar_set_flag(&flags, CC_C, carry);
+                    if (count == 1) {
+                        apx_scalar_set_flag(&flags, CC_O,
+                                            ((result & sign_mask) != 0) ^
+                                                carry);
+                    }
+                }
+            } else {
+                result = (left >> count) |
+                         ((left << (bits - count)) & width_mask);
+                if (!no_flags) {
+                    apx_scalar_set_flag(&flags, CC_C,
+                                        (result & sign_mask) != 0);
+                    if (count == 1) {
+                        apx_scalar_set_flag(
+                            &flags, CC_O,
+                            ((result >> (bits - 1)) ^
+                             (result >> (bits - 2))) & 1);
+                    }
+                }
+            }
+            write_flags = !no_flags;
+        }
+        break;
+    }
+    case APX_SCALAR_RCL:
+    case APX_SCALAR_RCR: {
+        unsigned int count = (desc & APX_SCALAR_COUNT_CL)
+                                 ? env->regs[R_ECX] & 0xff
+                                 : (unsigned int)immediate;
+        const unsigned int extended_bits = bits + 1;
+        __uint128_t extended = ((__uint128_t)left << 1) |
+                               ((flags & CC_C) != 0);
+        __uint128_t extended_mask = ((__uint128_t)1 << extended_bits) - 1;
+
+        count &= width == 8 ? 63 : 31;
+        if (width < 4) {
+            count %= extended_bits;
+        }
+        if (count != 0) {
+            if (operation == APX_SCALAR_RCL) {
+                extended = ((extended << count) |
+                            (extended >> (extended_bits - count))) &
+                           extended_mask;
+            } else {
+                extended = (extended >> count) |
+                           ((extended << (extended_bits - count)) &
+                            extended_mask);
+            }
+            result = (uint64_t)(extended >> 1) & width_mask;
+            if (!no_flags) {
+                const bool carry = extended & 1;
+
+                apx_scalar_set_flag(&flags, CC_C, carry);
+                if (count == 1) {
+                    if (operation == APX_SCALAR_RCL) {
+                        apx_scalar_set_flag(&flags, CC_O,
+                                            ((result & sign_mask) != 0) ^
+                                                carry);
+                    } else {
+                        apx_scalar_set_flag(
+                            &flags, CC_O,
+                            ((result >> (bits - 1)) ^
+                             (result >> (bits - 2))) & 1);
+                    }
+                }
+                write_flags = true;
+            }
+        }
+        break;
+    }
+    case APX_SCALAR_SHL:
+    case APX_SCALAR_SHR:
+    case APX_SCALAR_SAR: {
+        unsigned int count = (desc & APX_SCALAR_COUNT_CL)
+                                 ? env->regs[R_ECX] & 0xff
+                                 : (unsigned int)immediate;
+
+        count &= width == 8 ? 63 : 31;
+        if (count != 0) {
+            bool carry = (flags & CC_C) != 0;
+
+            if (operation == APX_SCALAR_SHL) {
+                if (count <= bits) {
+                    carry = (left >> (bits - count)) & 1;
+                }
+                result = count >= bits ? 0 : (left << count) & width_mask;
+                if (!no_flags && count == 1) {
+                    apx_scalar_set_flag(&flags, CC_O,
+                                        ((result & sign_mask) != 0) ^ carry);
+                }
+            } else if (operation == APX_SCALAR_SHR) {
+                if (count <= bits) {
+                    carry = (left >> (count - 1)) & 1;
+                }
+                result = count >= bits ? 0 : left >> count;
+                if (!no_flags && count == 1) {
+                    apx_scalar_set_flag(&flags, CC_O,
+                                        (left & sign_mask) != 0);
+                }
+            } else {
+                if (count <= bits) {
+                    carry = (left >> (count - 1)) & 1;
+                }
+                result = count >= bits
+                             ? (left & sign_mask ? width_mask : 0)
+                             : (uint64_t)(apx_scalar_signed(left, width) >>
+                                          count) &
+                                   width_mask;
+                if (!no_flags && count == 1) {
+                    apx_scalar_set_flag(&flags, CC_O, false);
+                }
+            }
+            if (!no_flags) {
+                if (count <= bits) {
+                    apx_scalar_set_flag(&flags, CC_C, carry);
+                }
+                flags = apx_scalar_szp_flags(flags, result, width);
+                write_flags = true;
+            }
+        }
+        break;
+    }
+    case APX_SCALAR_SHLD:
+    case APX_SCALAR_SHRD: {
+        unsigned int count = (desc & APX_SCALAR_COUNT_CL)
+                                 ? env->regs[R_ECX] & 0xff
+                                 : (unsigned int)immediate;
+
+        count &= width == 8 ? 63 : 31;
+        if (count != 0 && count <= bits) {
+            const bool old_sign = (left & sign_mask) != 0;
+            bool carry;
+
+            if (operation == APX_SCALAR_SHLD) {
+                carry = (left >> (bits - count)) & 1;
+                result = ((left << count) | (right >> (bits - count))) &
+                         width_mask;
+            } else {
+                carry = (left >> (count - 1)) & 1;
+                result = (left >> count) |
+                         ((right << (bits - count)) & width_mask);
+            }
+            if (!no_flags) {
+                apx_scalar_set_flag(&flags, CC_C, carry);
+                flags = apx_scalar_szp_flags(flags, result, width);
+                if (count == 1) {
+                    apx_scalar_set_flag(
+                        &flags, CC_O,
+                        operation == APX_SCALAR_SHLD
+                            ? ((result & sign_mask) != 0) ^ carry
+                            : old_sign ^ ((result & sign_mask) != 0));
+                }
+                write_flags = true;
+            }
+        }
+        break;
+    }
+    case APX_SCALAR_IMUL: {
+        bool overflow;
+
+        if (width == 8) {
+            const __int128 product = (__int128)(int64_t)left *
+                                     (__int128)(int64_t)right;
+
+            result = (uint64_t)product;
+            overflow = product != (__int128)(int64_t)result;
+        } else {
+            const int64_t product = apx_scalar_signed(left, width) *
+                                    apx_scalar_signed(right, width);
+
+            result = (uint64_t)product & width_mask;
+            overflow = product != apx_scalar_signed(result, width);
+        }
+        if (!no_flags) {
+            apx_scalar_set_flag(&flags, CC_C, overflow);
+            apx_scalar_set_flag(&flags, CC_O, overflow);
+            write_flags = true;
+        }
+        break;
+    }
+    case APX_SCALAR_ADCX:
+    case APX_SCALAR_ADOX: {
+        const uint32_t chain_flag = operation == APX_SCALAR_ADCX ? CC_C : CC_O;
+        const uint64_t carry = (flags & chain_flag) != 0;
+        const __uint128_t sum = (__uint128_t)left + right + carry;
+
+        result = (uint64_t)sum & width_mask;
+        apx_scalar_set_flag(&flags, chain_flag, (sum >> bits) != 0);
+        write_flags = true;
+        break;
+    }
+    case APX_SCALAR_ANDN:
+        result = ~left & right & width_mask;
+        if (!no_flags) {
+            flags = apx_scalar_szp_flags(flags, result, width);
+            apx_scalar_set_flag(&flags, CC_C, false);
+            apx_scalar_set_flag(&flags, CC_O, false);
+            write_flags = true;
+        }
+        break;
+    case APX_SCALAR_BEXTR: {
+        const unsigned int start = left & 0xff;
+        const unsigned int length = (left >> 8) & 0xff;
+
+        result = start >= bits ? 0 : right >> start;
+        if (length < bits && length < 64) {
+            result &= length == 0 ? 0 : (UINT64_C(1) << length) - 1;
+        }
+        if (!no_flags) {
+            apx_scalar_set_flag(&flags, CC_C, false);
+            apx_scalar_set_flag(&flags, CC_O, false);
+            apx_scalar_set_flag(&flags, CC_Z, result == 0);
+            write_flags = true;
+        }
+        break;
+    }
+    case APX_SCALAR_BLSR:
+        result = right & (right - 1);
+        goto bls_flags;
+    case APX_SCALAR_BLSMSK:
+        result = right ^ (right - 1);
+        goto bls_flags;
+    case APX_SCALAR_BLSI:
+        result = right & (UINT64_C(0) - right);
+    bls_flags:
+        result &= width_mask;
+        if (!no_flags) {
+            flags = apx_scalar_szp_flags(flags, result, width);
+            if (operation == APX_SCALAR_BLSI) {
+                apx_scalar_set_flag(&flags, CC_C, right != 0);
+            } else {
+                apx_scalar_set_flag(&flags, CC_C, right == 0);
+            }
+            apx_scalar_set_flag(&flags, CC_O, false);
+            write_flags = true;
+        }
+        break;
+    case APX_SCALAR_BZHI: {
+        const unsigned int index = left & 0xff;
+
+        result = index >= bits
+                     ? right
+                     : index == 0 ? 0
+                                  : right & ((UINT64_C(1) << index) - 1);
+        if (!no_flags) {
+            flags = apx_scalar_szp_flags(flags, result, width);
+            apx_scalar_set_flag(&flags, CC_C, index >= bits);
+            apx_scalar_set_flag(&flags, CC_O, false);
+            write_flags = true;
+        }
+        break;
+    }
+    case APX_SCALAR_PDEP:
+        result = apx_scalar_pdep(left, right, width);
+        break;
+    case APX_SCALAR_PEXT:
+        result = apx_scalar_pext(left, right, width);
+        break;
+    case APX_SCALAR_SARX: {
+        const unsigned int count = left & (bits - 1);
+
+        result = (uint64_t)(apx_scalar_signed(right, width) >> count) &
+                 width_mask;
+        break;
+    }
+    case APX_SCALAR_SHLX:
+        result = (right << (left & (bits - 1))) & width_mask;
+        break;
+    case APX_SCALAR_SHRX:
+        result = right >> (left & (bits - 1));
+        break;
+    case APX_SCALAR_RORX: {
+        const unsigned int count = immediate & (bits - 1);
+
+        result = count == 0
+                     ? right
+                     : (right >> count) |
+                           ((right << (bits - count)) & width_mask);
+        break;
+    }
+    case APX_SCALAR_LZCNT:
+    case APX_SCALAR_TZCNT:
+    case APX_SCALAR_POPCNT: {
+        if (operation == APX_SCALAR_LZCNT) {
+            result = right == 0 ? bits
+                                : width == 8 ? clz64(right)
+                                             : clz32(right) - (32 - bits);
+        } else if (operation == APX_SCALAR_TZCNT) {
+            result = right == 0 ? bits
+                                : width == 8 ? ctz64(right) : ctz32(right);
+        } else {
+            result = ctpop64(right);
+        }
+        if (!no_flags) {
+            if (operation == APX_SCALAR_POPCNT) {
+                flags &= ~(CC_C | CC_P | CC_A | CC_Z | CC_S | CC_O);
+                if (result == 0) {
+                    flags |= CC_Z;
+                }
+            } else {
+                apx_scalar_set_flag(&flags, CC_C, right == 0);
+                apx_scalar_set_flag(&flags, CC_Z, result == 0);
+                apx_scalar_set_flag(&flags, CC_S, false);
+                apx_scalar_set_flag(&flags, CC_O, false);
+            }
+            write_flags = true;
+        }
+        break;
+    }
+    case APX_SCALAR_MULX: {
+        const uint64_t multiplier = apx_scalar_read_gpr(env, R_EDX, width);
+
+        if (width == 8) {
+            const __uint128_t product = (__uint128_t)multiplier * right;
+
+            apx_scalar_write_gpr(env, src1, width, (uint64_t)product);
+            result = (uint64_t)(product >> 64);
+        } else {
+            const uint64_t product = multiplier * right;
+
+            apx_scalar_write_gpr(env, src1, width, product);
+            result = product >> bits;
+        }
+        break;
+    }
+    default:
+        g_assert_not_reached();
+    }
+
+    apx_scalar_write_gpr(env, dst, width, result);
+    if (write_flags) {
+        cpu_load_eflags(env, flags, CC_O | CC_S | CC_Z | CC_A | CC_P | CC_C);
+    }
+}
+#endif
 
 uint64_t helper_rdpkru(CPUX86State *env, uint32_t ecx)
 {

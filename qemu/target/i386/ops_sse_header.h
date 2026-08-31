@@ -130,6 +130,22 @@ DEF_HELPER_3(glue(pshufhw, SUFFIX), void, Reg, Reg, int)
 #endif
 
 #if SHIFT == 1
+DEF_HELPER_4(vpermilps_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_4(vpermilpd_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_3(sha1msg1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1nexte_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1msg2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f0_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha1rnds4_f3_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256rnds2_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256msg1_xmm, void, env, Reg, Reg)
+DEF_HELPER_3(sha256msg2_xmm, void, env, Reg, Reg)
+DEF_HELPER_4(gf2p8mulb_xmm, void, env, Reg, Reg, Reg)
+DEF_HELPER_5(gf2p8affineqb_xmm, void, env, Reg, Reg, Reg, i32)
+DEF_HELPER_5(gf2p8affineinvqb_xmm, void, env, Reg, Reg, Reg, i32)
+
 /* FPU ops */
 /* XXX: not accurate */
 
@@ -166,6 +182,9 @@ DEF_HELPER_3(cvtsq2sd, void, env, ZMMReg, i64)
 
 DEF_HELPER_3(cvtps2dq, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(cvtpd2dq, void, env, ZMMReg, ZMMReg)
+/* F16C half-precision <-> single-precision packed conversions. */
+DEF_HELPER_3(cvtph2ps, void, env, ZMMReg, ZMMReg)
+DEF_HELPER_4(cvtps2ph, void, env, ZMMReg, ZMMReg, i32)
 DEF_HELPER_3(cvtps2pi, void, env, MMXReg, ZMMReg)
 DEF_HELPER_3(cvtpd2pi, void, env, MMXReg, ZMMReg)
 DEF_HELPER_2(cvtss2si, s32, env, ZMMReg)
@@ -200,6 +219,12 @@ DEF_HELPER_3(hsubps, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(hsubpd, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(addsubps, void, env, ZMMReg, ZMMReg)
 DEF_HELPER_3(addsubpd, void, env, ZMMReg, ZMMReg)
+
+/* FMA3: env, dst, srcA, srcB, srcC (multiply/add order), muladd flags. */
+DEF_HELPER_6(fma_ss, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_sd, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_ps, void, env, Reg, Reg, Reg, Reg, int)
+DEF_HELPER_6(fma_pd, void, env, Reg, Reg, Reg, Reg, int)
 
 #define SSE_HELPER_CMP(name, F)                           \
     DEF_HELPER_3(name ## ps, void, env, Reg, Reg)         \

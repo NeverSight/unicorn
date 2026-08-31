@@ -527,7 +527,14 @@ void helper_shufps(Reg *d, Reg *s, int order)
     r.L(1) = d->L((order >> 2) & 3);
     r.L(2) = s->L((order >> 4) & 3);
     r.L(3) = s->L((order >> 6) & 3);
-    *d = r;
+    /* Only the low 128 bits are computed; `r` is a full-width Reg whose upper
+     * lanes are uninitialised.  Assigning `*d = r` would copy those garbage
+     * bytes over the destination's high lanes — harmless for a 128-bit dst, but
+     * the VEX.256 decoder invokes this helper once per 128-bit lane with a
+     * +16-byte destination pointer, so a full-width store clobbers the adjacent
+     * lane (destroying an in-place high-lane source).  Store exactly 128 bits. */
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void helper_shufpd(Reg *d, Reg *s, int order)
@@ -536,7 +543,8 @@ void helper_shufpd(Reg *d, Reg *s, int order)
 
     r.Q(0) = d->Q(order & 1);
     r.Q(1) = s->Q((order >> 1) & 1);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshufd, SUFFIX)(Reg *d, Reg *s, int order)
@@ -547,7 +555,8 @@ void glue(helper_pshufd, SUFFIX)(Reg *d, Reg *s, int order)
     r.L(1) = s->L((order >> 2) & 3);
     r.L(2) = s->L((order >> 4) & 3);
     r.L(3) = s->L((order >> 6) & 3);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshuflw, SUFFIX)(Reg *d, Reg *s, int order)
@@ -559,7 +568,8 @@ void glue(helper_pshuflw, SUFFIX)(Reg *d, Reg *s, int order)
     r.W(2) = s->W((order >> 4) & 3);
     r.W(3) = s->W((order >> 6) & 3);
     r.Q(1) = s->Q(1);
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
@@ -571,11 +581,261 @@ void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
     r.W(5) = s->W(4 + ((order >> 2) & 3));
     r.W(6) = s->W(4 + ((order >> 4) & 3));
     r.W(7) = s->W(4 + ((order >> 6) & 3));
-    *d = r;
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 #endif
 
 #if SHIFT == 1
+void helper_vpermilps_xmm(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    uint32_t r0 = v->L(s->L(0) & 3);
+    uint32_t r1 = v->L(s->L(1) & 3);
+    uint32_t r2 = v->L(s->L(2) & 3);
+    uint32_t r3 = v->L(s->L(3) & 3);
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = r2;
+    d->L(3) = r3;
+}
+
+void helper_vpermilpd_xmm(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    uint64_t r0 = v->Q((s->Q(0) >> 1) & 1);
+    uint64_t r1 = v->Q((s->Q(1) >> 1) & 1);
+
+    d->Q(0) = r0;
+    d->Q(1) = r1;
+}
+
+void helper_sha1msg1_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0);
+    uint32_t a1 = d->L(1);
+    uint32_t a2 = d->L(2);
+    uint32_t a3 = d->L(3);
+    uint32_t b2 = s->L(2);
+    uint32_t b3 = s->L(3);
+
+    d->L(3) = a3 ^ a1;
+    d->L(2) = a2 ^ a0;
+    d->L(1) = a1 ^ b3;
+    d->L(0) = a0 ^ b2;
+}
+
+void helper_sha1nexte_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+    uint32_t b1 = s->L(1);
+    uint32_t b2 = s->L(2);
+    uint32_t b3 = s->L(3);
+
+    d->L(3) = b3 + rol32(a3, 30);
+    d->L(2) = b2;
+    d->L(1) = b1;
+    d->L(0) = b0;
+}
+
+void helper_sha1msg2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0);
+    uint32_t a1 = d->L(1);
+    uint32_t a2 = d->L(2);
+    uint32_t a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+    uint32_t b1 = s->L(1);
+    uint32_t b2 = s->L(2);
+    uint32_t r3 = rol32(a3 ^ b2, 1);
+
+    d->L(3) = r3;
+    d->L(2) = rol32(a2 ^ b1, 1);
+    d->L(1) = rol32(a1 ^ b0, 1);
+    d->L(0) = rol32(a0 ^ r3, 1);
+}
+
+#define SHA1_F0(b, c, d) (((b) & (c)) ^ (~(b) & (d)))
+#define SHA1_F1(b, c, d) ((b) ^ (c) ^ (d))
+#define SHA1_F2(b, c, d) (((b) & (c)) ^ ((b) & (d)) ^ ((c) & (d)))
+
+#define SHA1RNDS4_HELPER(name, F, K)                                      \
+    void name(CPUX86State *env, Reg *d, Reg *s)                           \
+    {                                                                     \
+        uint32_t A = d->L(3), B = d->L(2), C = d->L(1), D = d->L(0);     \
+        uint32_t W[4] = {s->L(0), s->L(1), s->L(2), s->L(3)};            \
+        uint32_t E = 0, i;                                                \
+                                                                          \
+        for (i = 0; i < 4; ++i) {                                        \
+            uint32_t t = F(B, C, D) + rol32(A, 5) + W[3 - i] + E + K;    \
+            E = D;                                                        \
+            D = C;                                                        \
+            C = rol32(B, 30);                                             \
+            B = A;                                                        \
+            A = t;                                                        \
+        }                                                                 \
+        d->L(3) = A;                                                       \
+        d->L(2) = B;                                                       \
+        d->L(1) = C;                                                       \
+        d->L(0) = D;                                                       \
+    }
+
+SHA1RNDS4_HELPER(helper_sha1rnds4_f0_xmm, SHA1_F0, 0x5A827999)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f1_xmm, SHA1_F1, 0x6ED9EBA1)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f2_xmm, SHA1_F2, 0x8F1BBCDC)
+SHA1RNDS4_HELPER(helper_sha1rnds4_f3_xmm, SHA1_F1, 0xCA62C1D6)
+
+#define SHA256_CH(e, f, g)  (((e) & (f)) ^ (~(e) & (g)))
+#define SHA256_MAJ(a, b, c) (((a) & (b)) ^ ((a) & (c)) ^ ((b) & (c)))
+#define SHA256_RNDS0(w) (ror32((w), 2) ^ ror32((w), 13) ^ ror32((w), 22))
+#define SHA256_RNDS1(w) (ror32((w), 6) ^ ror32((w), 11) ^ ror32((w), 25))
+#define SHA256_MSGS0(w) (ror32((w), 7) ^ ror32((w), 18) ^ ((w) >> 3))
+#define SHA256_MSGS1(w) (ror32((w), 17) ^ ror32((w), 19) ^ ((w) >> 10))
+
+void helper_sha256rnds2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t A = s->L(3), B = s->L(2), C = d->L(3), D = d->L(2);
+    uint32_t E = s->L(1), F = s->L(0), G = d->L(1), H = d->L(0);
+    uint32_t wk0 = env->xmm_regs[0].ZMM_L(0);
+    uint32_t wk1 = env->xmm_regs[0].ZMM_L(1);
+    uint32_t t, AA, EE, r0, r1, r2, r3;
+
+    t = SHA256_CH(E, F, G) + SHA256_RNDS1(E) + wk0 + H;
+    AA = t + SHA256_MAJ(A, B, C) + SHA256_RNDS0(A);
+    EE = t + D;
+    r2 = AA;
+    r0 = EE;
+
+    D = C; C = B; B = A; A = AA;
+    H = G; G = F; F = E; E = EE;
+
+    t = SHA256_CH(E, F, G) + SHA256_RNDS1(E) + wk1 + H;
+    AA = t + SHA256_MAJ(A, B, C) + SHA256_RNDS0(A);
+    EE = t + D;
+    r3 = AA;
+    r1 = EE;
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = r2;
+    d->L(3) = r3;
+}
+
+void helper_sha256msg1_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0), a1 = d->L(1);
+    uint32_t a2 = d->L(2), a3 = d->L(3);
+    uint32_t b0 = s->L(0);
+
+    d->L(0) = a0 + SHA256_MSGS0(a1);
+    d->L(1) = a1 + SHA256_MSGS0(a2);
+    d->L(2) = a2 + SHA256_MSGS0(a3);
+    d->L(3) = a3 + SHA256_MSGS0(b0);
+}
+
+void helper_sha256msg2_xmm(CPUX86State *env, Reg *d, Reg *s)
+{
+    uint32_t a0 = d->L(0), a1 = d->L(1);
+    uint32_t a2 = d->L(2), a3 = d->L(3);
+    uint32_t b2 = s->L(2), b3 = s->L(3);
+    uint32_t r0 = a0 + SHA256_MSGS1(b2);
+    uint32_t r1 = a1 + SHA256_MSGS1(b3);
+
+    d->L(0) = r0;
+    d->L(1) = r1;
+    d->L(2) = a2 + SHA256_MSGS1(r0);
+    d->L(3) = a3 + SHA256_MSGS1(r1);
+}
+
+static uint8_t gfni_mul_byte(uint8_t a, uint8_t b)
+{
+    uint16_t product = 0;
+    int bit;
+
+    for (bit = 0; bit < 8; ++bit) {
+        if ((b >> bit) & 1)
+            product ^= (uint16_t)a << bit;
+    }
+    for (bit = 14; bit >= 8; --bit) {
+        if ((product >> bit) & 1)
+            product ^= (uint16_t)0x11b << (bit - 8);
+    }
+    return product;
+}
+
+static uint8_t gfni_inverse_byte(uint8_t value)
+{
+    uint8_t result = 1;
+    uint8_t base = value;
+    unsigned exponent = 254;
+
+    if (value == 0)
+        return 0;
+    while (exponent) {
+        if (exponent & 1)
+            result = gfni_mul_byte(result, base);
+        base = gfni_mul_byte(base, base);
+        exponent >>= 1;
+    }
+    return result;
+}
+
+static uint8_t gfni_parity_byte(uint8_t value)
+{
+    value ^= value >> 4;
+    value ^= value >> 2;
+    value ^= value >> 1;
+    return value & 1;
+}
+
+static void gfni_affine_xmm(Reg *d, Reg *x, Reg *a, uint8_t imm,
+                            bool inverse)
+{
+    uint8_t result[16];
+    int qword, byte, bit;
+
+    for (qword = 0; qword < 2; ++qword) {
+        uint64_t matrix = a->Q(qword);
+        for (byte = 0; byte < 8; ++byte) {
+            uint8_t value = x->B(qword * 8 + byte);
+            uint8_t out = 0;
+            if (inverse)
+                value = gfni_inverse_byte(value);
+            for (bit = 0; bit < 8; ++bit) {
+                uint8_t row = matrix >> ((7 - bit) * 8);
+                uint8_t dot = gfni_parity_byte(row & value);
+                out |= (dot ^ ((imm >> bit) & 1)) << bit;
+            }
+            result[qword * 8 + byte] = out;
+        }
+    }
+    for (byte = 0; byte < 16; ++byte)
+        d->B(byte) = result[byte];
+}
+
+void helper_gf2p8mulb_xmm(CPUX86State *env, Reg *d, Reg *a, Reg *b)
+{
+    uint8_t result[16];
+    int i;
+
+    for (i = 0; i < 16; ++i)
+        result[i] = gfni_mul_byte(a->B(i), b->B(i));
+    for (i = 0; i < 16; ++i)
+        d->B(i) = result[i];
+}
+
+void helper_gf2p8affineqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
+                              uint32_t imm)
+{
+    gfni_affine_xmm(d, x, a, imm, false);
+}
+
+void helper_gf2p8affineinvqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
+                                 uint32_t imm)
+{
+    gfni_affine_xmm(d, x, a, imm, true);
+}
+
 /* FPU ops */
 /* XXX: not accurate */
 
@@ -627,6 +887,139 @@ SSE_HELPER_S(min, FPU_MIN)
 SSE_HELPER_S(max, FPU_MAX)
 SSE_HELPER_S(sqrt, FPU_SQRT)
 
+/* FMA3 fused multiply-add: d = round(a*b (+/-) c) with a SINGLE rounding.  The
+ * decoder permutes the three sources into multiply/add order (a,b,c) per the
+ * 132/213/231 form and passes a variant code (0 madd, 1 msub, 2 nmadd, 3 nmsub,
+ * 4 maddsub, 5 msubadd) which selects the product/addend negations below.  d is
+ * the FMA dst operand,
+ * which is also one of a/b/c; each lane is read before it is written, so the
+ * in-place update is safe even when d aliases a source. */
+static inline int fma_variant_flags(int v)
+{
+    int f = 0;
+    if (v & 1) {                /* msub / nmsub: subtract the addend */
+        f |= float_muladd_negate_c;
+    }
+    if (v & 2) {                /* nmadd / nmsub: negate the product */
+        f |= float_muladd_negate_product;
+    }
+    return f;
+}
+
+static inline int fma_packed_variant_flags(int variant, int element)
+{
+    if (variant == 4) {        /* maddsub: even subtract, odd add */
+        return (element & 1) ? 0 : float_muladd_negate_c;
+    }
+    if (variant == 5) {        /* msubadd: even add, odd subtract */
+        return (element & 1) ? float_muladd_negate_c : 0;
+    }
+    return fma_variant_flags(variant);
+}
+
+/* x86 applies MXCSR.FTZ after rounding and only when the rounded operation
+ * produces a subnormal.  Computing with softfloat FTZ disabled distinguishes
+ * a rounded subnormal (flush it and report underflow/precision) from a tiny
+ * intermediate that rounds back to normal (do not flush it). */
+static inline float32 x86_fma32(CPUX86State *env, float32 a, float32 b,
+                                float32 c, int flags)
+{
+    float_status *status = &env->sse_status;
+    flag ftz = get_flush_to_zero(status);
+    int old_flags;
+    int new_flags;
+    float32 result;
+
+    old_flags = get_float_exception_flags(status);
+    set_float_exception_flags(0, status);
+    if (ftz)
+        set_flush_to_zero(false, status);
+    result = float32_muladd(a, b, c, flags, status);
+    new_flags = get_float_exception_flags(status);
+    if (!get_flush_inputs_to_zero(status) &&
+        (((a & 0x7f800000U) == 0 && (a & 0x007fffffU) != 0) ||
+         ((b & 0x7f800000U) == 0 && (b & 0x007fffffU) != 0) ||
+         ((c & 0x7f800000U) == 0 && (c & 0x007fffffU) != 0))) {
+        new_flags |= float_flag_input_denormal;
+    }
+    if (ftz && (result & 0x7f800000U) == 0 &&
+        (result & 0x007fffffU) != 0) {
+        result &= 0x80000000U;
+        new_flags |= float_flag_output_denormal;
+    }
+    if (ftz)
+        set_flush_to_zero(true, status);
+    set_float_exception_flags(old_flags | new_flags, status);
+    return result;
+}
+
+static inline float64 x86_fma64(CPUX86State *env, float64 a, float64 b,
+                                float64 c, int flags)
+{
+    float_status *status = &env->sse_status;
+    flag ftz = get_flush_to_zero(status);
+    int old_flags;
+    int new_flags;
+    float64 result;
+
+    old_flags = get_float_exception_flags(status);
+    set_float_exception_flags(0, status);
+    if (ftz)
+        set_flush_to_zero(false, status);
+    result = float64_muladd(a, b, c, flags, status);
+    new_flags = get_float_exception_flags(status);
+    if (!get_flush_inputs_to_zero(status) &&
+        (((a & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (a & UINT64_C(0x000fffffffffffff)) != 0) ||
+         ((b & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (b & UINT64_C(0x000fffffffffffff)) != 0) ||
+         ((c & UINT64_C(0x7ff0000000000000)) == 0 &&
+          (c & UINT64_C(0x000fffffffffffff)) != 0))) {
+        new_flags |= float_flag_input_denormal;
+    }
+    if (ftz && (result & UINT64_C(0x7ff0000000000000)) == 0 &&
+        (result & UINT64_C(0x000fffffffffffff)) != 0) {
+        result &= UINT64_C(0x8000000000000000);
+        new_flags |= float_flag_output_denormal;
+    }
+    if (ftz)
+        set_flush_to_zero(true, status);
+    set_float_exception_flags(old_flags | new_flags, status);
+    return result;
+}
+
+void helper_fma_ss(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    d->ZMM_S(0) = x86_fma32(env, a->ZMM_S(0), b->ZMM_S(0), c->ZMM_S(0),
+                            flags);
+}
+
+void helper_fma_sd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    int flags = fma_variant_flags(variant);
+    d->ZMM_D(0) = x86_fma64(env, a->ZMM_D(0), b->ZMM_D(0), c->ZMM_D(0),
+                            flags);
+}
+
+void helper_fma_ps(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    for (int i = 0; i < 4; i++) {
+        int flags = fma_packed_variant_flags(variant, i);
+        d->ZMM_S(i) = x86_fma32(env, a->ZMM_S(i), b->ZMM_S(i), c->ZMM_S(i),
+                                flags);
+    }
+}
+
+void helper_fma_pd(CPUX86State *env, Reg *d, Reg *a, Reg *b, Reg *c, int variant)
+{
+    for (int i = 0; i < 2; i++) {
+        int flags = fma_packed_variant_flags(variant, i);
+        d->ZMM_D(i) = x86_fma64(env, a->ZMM_D(i), b->ZMM_D(i), c->ZMM_D(i),
+                                flags);
+    }
+}
+
 
 /* float to float conversions */
 void helper_cvtps2pd(CPUX86State *env, Reg *d, Reg *s)
@@ -673,6 +1066,70 @@ void helper_cvtdq2pd(CPUX86State *env, Reg *d, Reg *s)
     l1 = (int32_t)s->ZMM_L(1);
     d->ZMM_D(0) = int32_to_float64(l0, &env->sse_status);
     d->ZMM_D(1) = int32_to_float64(l1, &env->sse_status);
+}
+
+/*
+ * F16C: convert four packed IEEE half-precision values (the low 64 bits of the
+ * source) to four single-precision values.  All four halves are read before any
+ * float result is written, because d and s alias in the register-register form
+ * and writing ZMM_S(0) would otherwise clobber the not-yet-read ZMM_W(1).
+ */
+void helper_cvtph2ps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    uint16_t h0 = s->ZMM_W(0), h1 = s->ZMM_W(1);
+    uint16_t h2 = s->ZMM_W(2), h3 = s->ZMM_W(3);
+    flag previous_daz = get_flush_inputs_to_zero(&env->sse_status);
+
+    /* F16C widens every binary16 value exactly; MXCSR.DAZ applies to
+     * single/double inputs, not to the packed half source representation. */
+    set_flush_inputs_to_zero(false, &env->sse_status);
+    d->ZMM_S(0) = float16_to_float32(h0, true, &env->sse_status);
+    d->ZMM_S(1) = float16_to_float32(h1, true, &env->sse_status);
+    d->ZMM_S(2) = float16_to_float32(h2, true, &env->sse_status);
+    d->ZMM_S(3) = float16_to_float32(h3, true, &env->sse_status);
+    set_flush_inputs_to_zero(previous_daz, &env->sse_status);
+}
+
+/*
+ * F16C: convert four packed single-precision values to four half-precision
+ * values, written to the low 64 bits of d (the upper 64 bits are zeroed).  imm
+ * selects the rounding mode (bit 2 = use MXCSR, bits 7:3 are ignored); the
+ * conversion is deterministic and used identically by every caller, so we
+ * always round per the SSE status.
+ */
+void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
+{
+    float32 f0 = s->ZMM_S(0), f1 = s->ZMM_S(1);
+    float32 f2 = s->ZMM_S(2), f3 = s->ZMM_S(3);
+    signed char previous_rounding_mode = env->sse_status.float_rounding_mode;
+    flag previous_ftz = get_flush_to_zero(&env->sse_status);
+
+    if (!(imm & (1 << 2))) {
+        switch (imm & 3) {
+        case 0:
+            set_float_rounding_mode(float_round_nearest_even, &env->sse_status);
+            break;
+        case 1:
+            set_float_rounding_mode(float_round_down, &env->sse_status);
+            break;
+        case 2:
+            set_float_rounding_mode(float_round_up, &env->sse_status);
+            break;
+        case 3:
+            set_float_rounding_mode(float_round_to_zero, &env->sse_status);
+            break;
+        }
+    }
+    /* VCVTPS2PH always produces gradual-underflow half results; MXCSR.FTZ is
+     * explicitly ignored for this conversion. */
+    set_flush_to_zero(false, &env->sse_status);
+    d->ZMM_W(0) = float32_to_float16(f0, true, &env->sse_status);
+    d->ZMM_W(1) = float32_to_float16(f1, true, &env->sse_status);
+    d->ZMM_W(2) = float32_to_float16(f2, true, &env->sse_status);
+    d->ZMM_W(3) = float32_to_float16(f3, true, &env->sse_status);
+    d->ZMM_Q(1) = 0;
+    set_flush_to_zero(previous_ftz, &env->sse_status);
+    env->sse_status.float_rounding_mode = previous_rounding_mode;
 }
 
 void helper_cvtpi2ps(CPUX86State *env, ZMMReg *d, MMXReg *s)
@@ -843,6 +1300,8 @@ int64_t helper_cvttsd2sq(CPUX86State *env, ZMMReg *s)
 
 void helper_rsqrtps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
                               &env->sse_status);
@@ -855,26 +1314,36 @@ void helper_rsqrtps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     d->ZMM_S(3) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(3), &env->sse_status),
                               &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rsqrtss(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
                               &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rcpps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
     d->ZMM_S(1) = float32_div(float32_one, s->ZMM_S(1), &env->sse_status);
     d->ZMM_S(2) = float32_div(float32_one, s->ZMM_S(2), &env->sse_status);
     d->ZMM_S(3) = float32_div(float32_one, s->ZMM_S(3), &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 void helper_rcpss(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
+    int old_flags = get_float_exception_flags(&env->sse_status);
+
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
 }
 
 static inline uint64_t helper_extrq(uint64_t src, int shift, int len)
@@ -929,7 +1398,11 @@ void helper_haddps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     r.ZMM_S(1) = float32_add(d->ZMM_S(2), d->ZMM_S(3), &env->sse_status);
     r.ZMM_S(2) = float32_add(s->ZMM_S(0), s->ZMM_S(1), &env->sse_status);
     r.ZMM_S(3) = float32_add(s->ZMM_S(2), s->ZMM_S(3), &env->sse_status);
-    *d = r;
+    /* Store only the computed 128 bits; the VEX.256 decoder runs this helper
+     * once per 128-bit lane, so a full `*d = r` would clobber the adjacent lane
+     * with the local's uninitialised upper bytes (see pshufd note). */
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_haddpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -938,7 +1411,8 @@ void helper_haddpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 
     r.ZMM_D(0) = float64_add(d->ZMM_D(0), d->ZMM_D(1), &env->sse_status);
     r.ZMM_D(1) = float64_add(s->ZMM_D(0), s->ZMM_D(1), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_hsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -949,7 +1423,8 @@ void helper_hsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     r.ZMM_S(1) = float32_sub(d->ZMM_S(2), d->ZMM_S(3), &env->sse_status);
     r.ZMM_S(2) = float32_sub(s->ZMM_S(0), s->ZMM_S(1), &env->sse_status);
     r.ZMM_S(3) = float32_sub(s->ZMM_S(2), s->ZMM_S(3), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_hsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -958,7 +1433,8 @@ void helper_hsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 
     r.ZMM_D(0) = float64_sub(d->ZMM_D(0), d->ZMM_D(1), &env->sse_status);
     r.ZMM_D(1) = float64_sub(s->ZMM_D(0), s->ZMM_D(1), &env->sse_status);
-    *d = r;
+    d->ZMM_Q(0) = r.ZMM_Q(0);
+    d->ZMM_Q(1) = r.ZMM_Q(1);
 }
 
 void helper_addsubps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
@@ -1145,7 +1621,11 @@ void glue(helper_packsswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.B(14) = satsb((int16_t)s->W(6));
     r.B(15) = satsb((int16_t)s->W(7));
 #endif
-    *d = r;
+    /* Store only the computed width; a full `*d = r` copies the local's
+     * uninitialised upper bytes over the adjacent 128-bit lane when the
+     * VEX.256 decoder runs this helper per lane (see pshufd note). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_packuswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1172,7 +1652,8 @@ void glue(helper_packuswb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.B(14) = satub((int16_t)s->W(6));
     r.B(15) = satub((int16_t)s->W(7));
 #endif
-    *d = r;
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1191,7 +1672,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.W(6) = satsw(s->L(2));
     r.W(7) = satsw(s->L(3));
 #endif
-    *d = r;
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define UNPCK_OP(base_name, base)                                       \
@@ -1219,7 +1701,11 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.B(14) = d->B((base << (SHIFT + 2)) + 7);             \
                  r.B(15) = s->B((base << (SHIFT + 2)) + 7);             \
                                                                       ) \
-            *d = r;                                                     \
+            /* store only the computed width; a full `*d = r` would copy  \
+             * the local's uninitialised upper bytes over the adjacent    \
+             * 128-bit lane when the VEX.256 decoder runs this per-lane */ \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     void glue(helper_punpck ## base_name ## wd, SUFFIX)(CPUX86State *env,\
@@ -1237,7 +1723,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.W(6) = d->W((base << (SHIFT + 1)) + 3);              \
                  r.W(7) = s->W((base << (SHIFT + 1)) + 3);              \
                                                                       ) \
-            *d = r;                                                     \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     void glue(helper_punpck ## base_name ## dq, SUFFIX)(CPUX86State *env,\
@@ -1251,7 +1738,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                  r.L(2) = d->L((base << SHIFT) + 1);                    \
                  r.L(3) = s->L((base << SHIFT) + 1);                    \
                                                                       ) \
-            *d = r;                                                     \
+            d->Q(0) = r.Q(0);                                           \
+        XMM_ONLY(d->Q(1) = r.Q(1);)                                     \
     }                                                                   \
                                                                         \
     XMM_ONLY(                                                           \
@@ -1264,7 +1752,8 @@ void glue(helper_packssdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
                                                                         \
                  r.Q(0) = d->Q(base);                                   \
                  r.Q(1) = s->Q(base);                                   \
-                 *d = r;                                                \
+                 d->Q(0) = r.Q(0);                                      \
+                 d->Q(1) = r.Q(1);                                      \
              }                                                          \
                                                                         )
 
@@ -1430,7 +1919,11 @@ void glue(helper_pshufb, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
         r.B(i) = (s->B(i) & 0x80) ? 0 : (d->B(s->B(i) & ((8 << SHIFT) - 1)));
     }
 
-    *d = r;
+    /* Store only the computed width; a full `*d = r` would copy the local's
+     * uninitialised upper bytes over the adjacent 128-bit lane when the
+     * VEX.256 decoder runs this helper once per lane (see pshufd note). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 void glue(helper_phaddw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -1564,7 +2057,13 @@ void glue(helper_palignr, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
 #undef SHR
     }
 
-    *d = r;
+    /* Store only the computed width (64-bit MMX / 128-bit XMM).  The VEX.256
+     * decoder invokes this helper once per 128-bit lane with a +16-byte
+     * destination pointer, so a full-width `*d = r` store would clobber the
+     * adjacent lane's just-loaded src1 with the uninitialised upper bytes of
+     * the local `r` (destroying an in-place high-lane source). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define XMM0 (env->xmm_regs[0])
@@ -1697,7 +2196,11 @@ void glue(helper_packusdw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
     r.W(5) = satuw((int32_t) s->L(1));
     r.W(6) = satuw((int32_t) s->L(2));
     r.W(7) = satuw((int32_t) s->L(3));
-    *d = r;
+    /* Store only the computed 128 bits; a full `*d = r` clobbers the adjacent
+     * lane under the per-lane VEX.256 decoder (see pshufd note).  packusdw is
+     * XMM-only (SSE4.1). */
+    d->Q(0) = r.Q(0);
+    XMM_ONLY(d->Q(1) = r.Q(1));
 }
 
 #define FMINSB(d, s) MIN((int8_t)d, (int8_t)s)
@@ -1899,32 +2402,21 @@ SSE_HELPER_I(helper_pblendw, W, 8, FBLENDP)
 
 void glue(helper_dpps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s, uint32_t mask)
 {
-    float32 iresult = float32_zero;
+    float32 product[4] = {
+        float32_zero, float32_zero, float32_zero, float32_zero,
+    };
+    float32 pair01, pair23, iresult;
+    int i;
 
-    if (mask & (1 << 4)) {
-        iresult = float32_add(iresult,
-                              float32_mul(d->ZMM_S(0), s->ZMM_S(0),
-                                          &env->sse_status),
-                              &env->sse_status);
+    for (i = 0; i < 4; i++) {
+        if (mask & (1 << (i + 4))) {
+            product[i] = float32_mul(d->ZMM_S(i), s->ZMM_S(i),
+                                     &env->sse_status);
+        }
     }
-    if (mask & (1 << 5)) {
-        iresult = float32_add(iresult,
-                              float32_mul(d->ZMM_S(1), s->ZMM_S(1),
-                                          &env->sse_status),
-                              &env->sse_status);
-    }
-    if (mask & (1 << 6)) {
-        iresult = float32_add(iresult,
-                              float32_mul(d->ZMM_S(2), s->ZMM_S(2),
-                                          &env->sse_status),
-                              &env->sse_status);
-    }
-    if (mask & (1 << 7)) {
-        iresult = float32_add(iresult,
-                              float32_mul(d->ZMM_S(3), s->ZMM_S(3),
-                                          &env->sse_status),
-                              &env->sse_status);
-    }
+    pair01 = float32_add(product[0], product[1], &env->sse_status);
+    pair23 = float32_add(product[2], product[3], &env->sse_status);
+    iresult = float32_add(pair01, pair23, &env->sse_status);
     d->ZMM_S(0) = (mask & (1 << 0)) ? iresult : float32_zero;
     d->ZMM_S(1) = (mask & (1 << 1)) ? iresult : float32_zero;
     d->ZMM_S(2) = (mask & (1 << 2)) ? iresult : float32_zero;
@@ -1933,20 +2425,17 @@ void glue(helper_dpps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s, uint32_t mask)
 
 void glue(helper_dppd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s, uint32_t mask)
 {
-    float64 iresult = float64_zero;
+    float64 product[2] = { float64_zero, float64_zero };
+    float64 iresult;
+    int i;
 
-    if (mask & (1 << 4)) {
-        iresult = float64_add(iresult,
-                              float64_mul(d->ZMM_D(0), s->ZMM_D(0),
-                                          &env->sse_status),
-                              &env->sse_status);
+    for (i = 0; i < 2; i++) {
+        if (mask & (1 << (i + 4))) {
+            product[i] = float64_mul(d->ZMM_D(i), s->ZMM_D(i),
+                                     &env->sse_status);
+        }
     }
-    if (mask & (1 << 5)) {
-        iresult = float64_add(iresult,
-                              float64_mul(d->ZMM_D(1), s->ZMM_D(1),
-                                          &env->sse_status),
-                              &env->sse_status);
-    }
+    iresult = float64_add(product[0], product[1], &env->sse_status);
     d->ZMM_D(0) = (mask & (1 << 0)) ? iresult : float64_zero;
     d->ZMM_D(1) = (mask & (1 << 1)) ? iresult : float64_zero;
 }
@@ -1967,7 +2456,13 @@ void glue(helper_mpsadbw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
         r.W(i) += abs1(d->B(d0 + 3) - s->B(s0 + 3));
     }
 
-    *d = r;
+    /* Store only the computed 128 bits.  The VEX.256 decoder runs this helper
+     * once per 128-bit lane with a +16-byte destination pointer, so a full
+     * `*d = r` would copy the local's uninitialised upper bytes over the
+     * adjacent lane (corrupting the high lane's just-read src).  (mpsadbw is
+     * XMM-only; there is no MMX form.)  See the pshufd/pshufb note above. */
+    d->Q(0) = r.Q(0);
+    d->Q(1) = r.Q(1);
 }
 
 /* SSE4.2 op helpers */
@@ -2076,10 +2571,10 @@ static inline unsigned pcmpxstrx(CPUX86State *env, Reg *d, Reg *s,
             res = (2 << upper) - 1;
             break;
         }
-        for (j = valids - validd; j >= 0; j--) {
+        for (j = valids == upper ? valids : valids - validd; j >= 0; j--) {
             res <<= 1;
             v = 1;
-            for (i = validd; i >= 0; i--) {
+            for (i = MIN(valids - j, validd); i >= 0; i--) {
                 v &= (pcmp_val(s, ctrl, i + j) == pcmp_val(d, ctrl, i));
             }
             res |= v;
