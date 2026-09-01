@@ -21906,7 +21906,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0x12f:
 
     case 0x138:
-        if (!(prefixes & PREFIX_VEX) &&
+        if (b == 0x138 && !(prefixes & PREFIX_VEX) &&
             (prefixes & (PREFIX_REPZ | PREFIX_REPNZ)) &&
             translator_ldub(tcg_ctx, env, s->pc) == 0xf8 &&
             (translator_ldub(tcg_ctx, env, s->pc + 1) >> 6) == 3) {

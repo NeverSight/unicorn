@@ -14849,6 +14849,25 @@ static void test_x86_bsf_bsr_zero_input_preserves_destination(void)
     }
 }
 
+static void test_x86_cvtsi2sd_xmm7_followed_by_call(void)
+{
+    uint8_t code[] = {
+        0xf2, 0x0f, 0x2a, 0xf8,       /* cvtsi2sd xmm7, eax */
+        0xe8, 0x02, 0x00, 0x00, 0x00, /* call subroutine */
+        0xeb, 0x01,                   /* jmp conversion */
+        0xc3,                         /* subroutine: ret */
+        0xf2, 0x0f, 0x2c, 0xc7,       /* conversion: cvttsd2si eax, xmm7 */
+    };
+    const uc_mode modes[] = {UC_MODE_32, UC_MODE_64};
+
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+        TEST_CODE(modes[i], code);
+        TEST_IN_REG(EAX, 42);
+        TEST_OUT_REG(EAX, 42);
+        TEST_RUN();
+    }
+}
+
 static void test_x86_rdpmc_fails_without_virtual_pmu(void)
 {
     const uint8_t code[] = {0x0f, 0x33}; /* rdpmc */
@@ -18249,6 +18268,8 @@ TEST_LIST = {
      test_x86_mov_ss_rejects_null_selector_rpl_mismatch},
     {"test_x86_bsf_bsr_zero_input_preserves_destination",
      test_x86_bsf_bsr_zero_input_preserves_destination},
+    {"test_x86_cvtsi2sd_xmm7_followed_by_call",
+     test_x86_cvtsi2sd_xmm7_followed_by_call},
     {"test_x86_xsave_roundtrips_ymmh", test_x86_xsave_roundtrips_ymmh},
     {"test_x86_rdpmc_fails_without_virtual_pmu",
      test_x86_rdpmc_fails_without_virtual_pmu},
