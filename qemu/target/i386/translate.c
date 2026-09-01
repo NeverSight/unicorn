@@ -16160,9 +16160,6 @@ static bool gen_evex_four_memory_ops(CPUX86State *env, DisasContext *s,
         four_fma = true;
         scalar = true;
         negative = opcode == 0xab;
-        if (vector_length == 3) {
-            return false;
-        }
         break;
     case 0x52:
     case 0x53:

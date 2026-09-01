@@ -9242,6 +9242,44 @@ static void test_x86_evex_feature_and_xstate_gates(void)
     }
 }
 
+static void test_x86_avx512_4fmaps_scalar_accepts_all_llig_spellings(void)
+{
+    const uint64_t data_address = code_start + 0x100;
+    const float memory[4] = { 10.0f, 20.0f, 30.0f, 40.0f };
+
+    for (unsigned ll = 0; ll < 4; ++ll) {
+        uint8_t code[] = {
+            0x62, 0xf2, 0x5f, (uint8_t)(0x08 | (ll << 5)), 0x9b, 0x08,
+        };
+        const float initial[4] = { 5.0f, 9.0f, 10.0f, 11.0f };
+        float observed[4] = { 0 };
+        uint64_t rax = data_address;
+        uint64_t rip = 0;
+        uc_engine *uc;
+
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_KNIGHTSMILL, code,
+                            sizeof(code));
+        OK(uc_mem_write(uc, data_address, memory, sizeof(memory)));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_reg_write(uc, UC_X86_REG_XMM1, initial));
+        for (unsigned source = 0; source < 4; ++source) {
+            const float value[4] = { (float)(source + 1), 0.0f, 0.0f, 0.0f };
+            OK(uc_reg_write(uc, UC_X86_REG_XMM4 + source, value));
+        }
+
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_XMM1, observed));
+        OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+        TEST_CHECK_(observed[0] == 305.0f,
+                    "LLIG spelling %u produced %g", ll, observed[0]);
+        TEST_CHECK(observed[1] == initial[1]);
+        TEST_CHECK(observed[2] == initial[2]);
+        TEST_CHECK(observed[3] == initial[3]);
+        TEST_CHECK(rip == code_start + sizeof(code));
+        OK(uc_close(uc));
+    }
+}
+
 static void test_x86_apx_rex2_mov_extension_fields(void)
 {
     static const uint8_t code[] = {
@@ -18544,6 +18582,8 @@ TEST_LIST = {
      test_x86_apx_rex2_map1_imul_semantics},
     {"test_x86_evex_feature_and_xstate_gates",
      test_x86_evex_feature_and_xstate_gates},
+    {"test_x86_avx512_4fmaps_scalar_accepts_all_llig_spellings",
+     test_x86_avx512_4fmaps_scalar_accepts_all_llig_spellings},
     {"test_x86_apx_rex2_mov_extension_fields",
      test_x86_apx_rex2_mov_extension_fields},
     {"test_x86_apx_rex2_register_fields_and_ignored_prefixes",
