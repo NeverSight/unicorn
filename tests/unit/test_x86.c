@@ -14868,6 +14868,24 @@ static void test_x86_cvtsi2sd_xmm7_followed_by_call(void)
     }
 }
 
+static void test_x86_cvttss2si_followed_by_rep_prefixed_instruction(void)
+{
+    uint8_t code[] = {
+        0xb8, 0x00, 0x00, 0x28, 0x42, /* mov eax, 42.0f */
+        0x66, 0x0f, 0x6e, 0xc0,       /* movd xmm0, eax */
+        0xf3, 0x0f, 0x2c, 0xf8,       /* cvttss2si edi, xmm0 */
+        0xf3, 0x90,                   /* pause */
+        0x89, 0xf8,                   /* mov eax, edi */
+    };
+    const uc_mode modes[] = {UC_MODE_32, UC_MODE_64};
+
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+        TEST_CODE(modes[i], code);
+        TEST_OUT_REG(EAX, 42);
+        TEST_RUN();
+    }
+}
+
 static void test_x86_rdpmc_fails_without_virtual_pmu(void)
 {
     const uint8_t code[] = {0x0f, 0x33}; /* rdpmc */
@@ -18270,6 +18288,8 @@ TEST_LIST = {
      test_x86_bsf_bsr_zero_input_preserves_destination},
     {"test_x86_cvtsi2sd_xmm7_followed_by_call",
      test_x86_cvtsi2sd_xmm7_followed_by_call},
+    {"test_x86_cvttss2si_followed_by_rep_prefixed_instruction",
+     test_x86_cvttss2si_followed_by_rep_prefixed_instruction},
     {"test_x86_xsave_roundtrips_ymmh", test_x86_xsave_roundtrips_ymmh},
     {"test_x86_rdpmc_fails_without_virtual_pmu",
      test_x86_rdpmc_fails_without_virtual_pmu},
