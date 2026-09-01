@@ -25,7 +25,7 @@ typedef struct InterruptRecord {
 static void setup_x86(uc_engine **uc, const uint8_t *code, size_t size)
 {
     OK(uc_open(UC_ARCH_X86, UC_MODE_64, uc));
-    OK(uc_ctl_set_cpu_model(*uc, UC_CPU_X86_ICELAKE_SERVER));
+    OK(uc_ctl_set_cpu_model(*uc, UC_CPU_X86_KNIGHTSMILL));
     OK(uc_mem_map(*uc, code_start, code_size, UC_PROT_ALL));
     OK(uc_mem_write(*uc, code_start, code, size));
 }

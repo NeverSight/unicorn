@@ -64,6 +64,11 @@ void x86_cpu_xsave_all_areas(X86CPU *cpu, X86XSaveArea *buf)
     memcpy(&xsave->pkru_state, &env->pkru, sizeof env->pkru);
 #endif
 
+    memcpy(xsave->xtilecfg_state.xtilecfg, env->xtilecfg,
+           sizeof env->xtilecfg);
+    memcpy(xsave->xtiledata_state.xtiledata, env->xtiledata,
+           sizeof env->xtiledata);
+
 }
 
 void x86_cpu_xrstor_all_areas(X86CPU *cpu, const X86XSaveArea *buf)
@@ -122,5 +127,10 @@ void x86_cpu_xrstor_all_areas(X86CPU *cpu, const X86XSaveArea *buf)
            16 * sizeof env->xmm_regs[16]);
     memcpy(&env->pkru, &xsave->pkru_state, sizeof env->pkru);
 #endif
+
+    memcpy(env->xtilecfg, xsave->xtilecfg_state.xtilecfg,
+           sizeof env->xtilecfg);
+    memcpy(env->xtiledata, xsave->xtiledata_state.xtiledata,
+           sizeof env->xtiledata);
 
 }

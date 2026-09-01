@@ -168,6 +168,8 @@ typedef enum X86Seg {
 #define HF_MPX_IU_SHIFT     26 /* BND registers in-use */
 #define HF_AVX_EN_SHIFT     27 /* CR4.OSXSAVE and XCR0.SSE/YMM */
 #define HF_APX_EN_SHIFT     28 /* APX_F, CR4.OSXSAVE and XCR0[19] */
+#define HF_AVX512_EN_SHIFT  29 /* AVX-512F, CR4.OSXSAVE and full XCR0 state */
+#define HF_AMX_EN_SHIFT     30 /* AMX-TILE, CR4.OSXSAVE and XCR0[18:17] */
 
 #define HF_CPL_MASK          (3 << HF_CPL_SHIFT)
 #define HF_INHIBIT_IRQ_MASK  (1 << HF_INHIBIT_IRQ_SHIFT)
@@ -195,6 +197,8 @@ typedef enum X86Seg {
 #define HF_MPX_IU_MASK       (1 << HF_MPX_IU_SHIFT)
 #define HF_AVX_EN_MASK       (1 << HF_AVX_EN_SHIFT)
 #define HF_APX_EN_MASK       (1 << HF_APX_EN_SHIFT)
+#define HF_AVX512_EN_MASK    (1 << HF_AVX512_EN_SHIFT)
+#define HF_AMX_EN_MASK       (1U << HF_AMX_EN_SHIFT)
 
 /* hflags2 */
 
@@ -492,6 +496,8 @@ typedef enum X86Seg {
 #define XSTATE_ZMM_Hi256_BIT            6
 #define XSTATE_Hi16_ZMM_BIT             7
 #define XSTATE_PKRU_BIT                 9
+#define XSTATE_XTILE_CFG_BIT            17
+#define XSTATE_XTILE_DATA_BIT           18
 #define XSTATE_APX_BIT                  19
 
 #define XSTATE_FP_MASK                  (1ULL << XSTATE_FP_BIT)
@@ -503,6 +509,8 @@ typedef enum X86Seg {
 #define XSTATE_ZMM_Hi256_MASK           (1ULL << XSTATE_ZMM_Hi256_BIT)
 #define XSTATE_Hi16_ZMM_MASK            (1ULL << XSTATE_Hi16_ZMM_BIT)
 #define XSTATE_PKRU_MASK                (1ULL << XSTATE_PKRU_BIT)
+#define XSTATE_XTILE_CFG_MASK           (1ULL << XSTATE_XTILE_CFG_BIT)
+#define XSTATE_XTILE_DATA_MASK          (1ULL << XSTATE_XTILE_DATA_BIT)
 #define XSTATE_APX_MASK                 (1ULL << XSTATE_APX_BIT)
 
 /* CPUID feature words */
@@ -544,6 +552,7 @@ typedef enum FeatureWord {
     FEAT_VMX_EPT_VPID_CAPS,
     FEAT_VMX_BASIC,
     FEAT_VMX_VMFUNC,
+    FEAT_1E_1_EAX,      /* CPUID[EAX=0x1e,ECX=1].EAX */
     FEATURE_WORDS,
 } FeatureWord;
 
@@ -780,6 +789,12 @@ typedef uint64_t FeatureWordArray[FEATURE_WORDS];
 #define CPUID_7_0_EDX_AVX512_4VNNIW     (1U << 2)
 /* AVX512 Multiply Accumulation Single Precision */
 #define CPUID_7_0_EDX_AVX512_4FMAPS     (1U << 3)
+/* Advanced Matrix Extensions BFloat16 */
+#define CPUID_7_0_EDX_AMX_BF16          (1U << 22)
+/* Advanced Matrix Extensions Tile */
+#define CPUID_7_0_EDX_AMX_TILE          (1U << 24)
+/* Advanced Matrix Extensions INT8 */
+#define CPUID_7_0_EDX_AMX_INT8          (1U << 25)
 /* Speculation Control */
 #define CPUID_7_0_EDX_SPEC_CTRL         (1U << 26)
 /* Single Thread Indirect Branch Predictors */
@@ -797,17 +812,31 @@ typedef uint64_t FeatureWordArray[FEATURE_WORDS];
 #define CPUID_7_1_EAX_AVX512_BF16       (1U << 5)
 /* Compare and Add if Condition is Met */
 #define CPUID_7_1_EAX_CMPCCXADD         (1U << 7)
+/* Advanced Matrix Extensions FP16 */
+#define CPUID_7_1_EAX_AMX_FP16          (1U << 21)
 /* Move with Restricted Speculation */
 #define CPUID_7_1_EAX_MOVRS             (1U << 31)
 
 /* Immediate-form RDMSR and WRMSRNS */
 #define CPUID_7_1_ECX_MSR_IMM           (1U << 5)
 
+/* Advanced Matrix Extensions COMPLEX */
+#define CPUID_7_1_EDX_AMX_COMPLEX        (1U << 8)
 /* User-mode MSR access (requires IA32_USER_MSR_CTL and its bitmap). */
 #define CPUID_7_1_EDX_USER_MSR          (1U << 15)
 /* Advanced Performance Extensions */
 #define CPUID_7_1_EDX_APX_F              (1U << 21)
 #define CPUID_29_0_EBX_NCI_NDD_NF        (1U << 0)
+
+/* CPUID[0x1e,1].EAX AMX feature aliases and extensions. */
+#define CPUID_1E_1_EAX_AMX_INT8_ALIAS    (1U << 0)
+#define CPUID_1E_1_EAX_AMX_BF16_ALIAS    (1U << 1)
+#define CPUID_1E_1_EAX_AMX_COMPLEX_ALIAS (1U << 2)
+#define CPUID_1E_1_EAX_AMX_FP16_ALIAS    (1U << 3)
+#define CPUID_1E_1_EAX_AMX_FP8           (1U << 4)
+/* Bit 6 is reserved. */
+#define CPUID_1E_1_EAX_AMX_AVX512        (1U << 7)
+#define CPUID_1E_1_EAX_AMX_MOVRS         (1U << 8)
 
 /* CLZERO instruction */
 #define CPUID_8000_0008_EBX_CLZERO      (1U << 0)
@@ -1265,7 +1294,6 @@ typedef enum AMXComputeOp {
     AMX_COMPUTE_TDPBHF8PS,
     AMX_COMPUTE_TDPHBF8PS,
     AMX_COMPUTE_TDPHF8PS,
-    AMX_COMPUTE_TMMULTF32PS,
     AMX_COMPUTE_COUNT,
 } AMXComputeOp;
 
@@ -1871,6 +1899,9 @@ typedef enum APXScalarOp {
 
 /* Internal descriptor for APX memory-address exception classification. */
 #define APX_MEMORY_SS (1U << 0)
+#define APX_MEMORY_TUPLE (1U << 1)
+#define APX_MEMORY_ACCESS_BYTES_MASK 0xffU
+#define APX_MEMORY_MODULO_ELEMENTS_SHIFT 8
 
 /* Internal descriptor for ENQCMD/ENQCMDS. */
 #define APX_ENQUEUE_SOURCE_SS (1U << 0)
@@ -1961,6 +1992,16 @@ typedef struct XSavePKRU {
     uint32_t padding;
 } XSavePKRU;
 
+/* Ext. save area 17: AMX tile configuration state */
+typedef struct XSaveXTILECFG {
+    uint8_t xtilecfg[64];
+} XSaveXTILECFG;
+
+/* Ext. save area 18: AMX tile data state */
+typedef struct XSaveXTILEDATA {
+    uint8_t xtiledata[8][1024];
+} XSaveXTILEDATA;
+
 typedef struct X86XSaveArea {
     X86LegacyXSaveArea legacy;
     X86XSaveHeader header;
@@ -1984,6 +2025,10 @@ typedef struct X86XSaveArea {
     XSaveHi16_ZMM hi16_zmm_state;
     /* PKRU State: */
     XSavePKRU pkru_state;
+    uint8_t padding2[0x38];
+    /* AMX State: */
+    XSaveXTILECFG xtilecfg_state;
+    XSaveXTILEDATA xtiledata_state;
 } X86XSaveArea;
 
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, avx_state) != 0x240);
@@ -2002,6 +2047,11 @@ QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, hi16_zmm_state) != 0x680);
 QEMU_BUILD_BUG_ON(sizeof(XSaveHi16_ZMM) != 0x400);
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, pkru_state) != 0xA80);
 QEMU_BUILD_BUG_ON(sizeof(XSavePKRU) != 0x8);
+QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, xtilecfg_state) != 0xAC0);
+QEMU_BUILD_BUG_ON(sizeof(XSaveXTILECFG) != 0x40);
+QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, xtiledata_state) != 0xB00);
+QEMU_BUILD_BUG_ON(sizeof(XSaveXTILEDATA) != 0x2000);
+QEMU_BUILD_BUG_ON(sizeof(X86XSaveArea) != 0x2B00);
 
 typedef enum TPRAccess {
     TPR_ACCESS_READ,

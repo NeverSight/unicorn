@@ -1184,6 +1184,81 @@ static void do_xsave_bndcsr(CPUX86State *env, target_ulong ptr, uintptr_t ra)
                     env->bndcs_regs.sts, ra);
 }
 
+static void do_xsave_opmask(CPUX86State *env, target_ulong ptr,
+                            uintptr_t ra)
+{
+    int i;
+
+    for (i = 0; i < NB_OPMASK_REGS; i++, ptr += 8) {
+        cpu_stq_data_ra(env, ptr, env->opmask_regs[i], ra);
+    }
+}
+
+static void do_xsave_zmm_hi256(CPUX86State *env, target_ulong ptr,
+                               uintptr_t ra)
+{
+    int i, qword;
+
+#ifdef TARGET_X86_64
+    for (i = 0; i < 16; i++) {
+        for (qword = 4; qword < 8; qword++, ptr += 8) {
+            cpu_stq_data_ra(env, ptr, env->xmm_regs[i].ZMM_Q(qword), ra);
+        }
+    }
+#else
+    for (i = 0; i < 16; i++) {
+        for (qword = 4; qword < 8; qword++, ptr += 8) {
+            uint64_t value = i < CPU_NB_REGS
+                                 ? env->xmm_regs[i].ZMM_Q(qword)
+                                 : 0;
+
+            cpu_stq_data_ra(env, ptr, value, ra);
+        }
+    }
+#endif
+}
+
+static void do_xsave_hi16_zmm(CPUX86State *env, target_ulong ptr,
+                              uintptr_t ra)
+{
+    int i, qword;
+
+    for (i = 16; i < 32; i++) {
+        for (qword = 0; qword < 8; qword++, ptr += 8) {
+#ifdef TARGET_X86_64
+            uint64_t value = env->xmm_regs[i].ZMM_Q(qword);
+#else
+            uint64_t value = 0;
+#endif
+
+            cpu_stq_data_ra(env, ptr, value, ra);
+        }
+    }
+}
+
+static void do_xsave_bytes(CPUX86State *env, target_ulong ptr,
+                           const uint8_t *state, size_t size, uintptr_t ra)
+{
+    size_t offset;
+
+    for (offset = 0; offset < size; offset += 8) {
+        cpu_stq_data_ra(env, ptr + offset, ldq_le_p(state + offset), ra);
+    }
+}
+
+static void do_xsave_xtilecfg(CPUX86State *env, target_ulong ptr,
+                              uintptr_t ra)
+{
+    do_xsave_bytes(env, ptr, env->xtilecfg, sizeof(env->xtilecfg), ra);
+}
+
+static void do_xsave_xtiledata(CPUX86State *env, target_ulong ptr,
+                               uintptr_t ra)
+{
+    do_xsave_bytes(env, ptr, &env->xtiledata[0][0],
+                   sizeof(env->xtiledata), ra);
+}
+
 static void do_xsave_apx(CPUX86State *env, target_ulong ptr, uintptr_t ra)
 {
 #ifdef TARGET_X86_64
@@ -1225,6 +1300,10 @@ void helper_fxsave(CPUX86State *env, target_ulong ptr)
 static uint64_t get_xinuse(CPUX86State *env)
 {
     uint64_t inuse = -1;
+    const uint64_t explicitly_tracked =
+        XSTATE_OPMASK_MASK | XSTATE_ZMM_Hi256_MASK |
+        XSTATE_Hi16_ZMM_MASK | XSTATE_XTILE_CFG_MASK |
+        XSTATE_XTILE_DATA_MASK | XSTATE_APX_MASK;
 
     /* For the most part, we don't track XINUSE.  We could calculate it
        here for all components, but it's probably less work to simply
@@ -1233,9 +1312,8 @@ static uint64_t get_xinuse(CPUX86State *env)
     if ((env->hflags & HF_MPX_IU_MASK) == 0) {
        inuse &= ~XSTATE_BNDREGS_MASK;
     }
-    if (!(env->xstate_bv & XSTATE_APX_MASK)) {
-        inuse &= ~XSTATE_APX_MASK;
-    }
+    inuse = (inuse & ~explicitly_tracked) |
+            (env->xstate_bv & explicitly_tracked);
     return inuse;
 }
 
@@ -1277,11 +1355,26 @@ static void do_xsave(CPUX86State *env, target_ulong ptr, uint64_t rfbm,
     if (opt & XSTATE_BNDCSR_MASK) {
         do_xsave_bndcsr(env, ptr + XO(bndcsr_state), ra);
     }
+    if (opt & XSTATE_OPMASK_MASK) {
+        do_xsave_opmask(env, ptr + XO(opmask_state), ra);
+    }
+    if (opt & XSTATE_ZMM_Hi256_MASK) {
+        do_xsave_zmm_hi256(env, ptr + XO(zmm_hi256_state), ra);
+    }
+    if (opt & XSTATE_Hi16_ZMM_MASK) {
+        do_xsave_hi16_zmm(env, ptr + XO(hi16_zmm_state), ra);
+    }
     if (opt & XSTATE_APX_MASK) {
         do_xsave_apx(env, ptr + XO(apx_state), ra);
     }
     if (opt & XSTATE_PKRU_MASK) {
         do_xsave_pkru(env, ptr + XO(pkru_state), ra);
+    }
+    if (opt & XSTATE_XTILE_CFG_MASK) {
+        do_xsave_xtilecfg(env, ptr + XO(xtilecfg_state), ra);
+    }
+    if (opt & XSTATE_XTILE_DATA_MASK) {
+        do_xsave_xtiledata(env, ptr + XO(xtiledata_state), ra);
     }
 
     /* Update the XSTATE_BV field.  */
@@ -1422,6 +1515,157 @@ static void do_xrstor_bndcsr(CPUX86State *env, target_ulong ptr, uintptr_t ra)
         = cpu_ldq_data_ra(env, ptr + offsetof(XSaveBNDCSR, bndcsr.sts), ra);
 }
 
+static void do_xrstor_opmask(CPUX86State *env, target_ulong ptr,
+                             uintptr_t ra)
+{
+    int i;
+
+    for (i = 0; i < NB_OPMASK_REGS; i++, ptr += 8) {
+        env->opmask_regs[i] = cpu_ldq_data_ra(env, ptr, ra);
+    }
+}
+
+static void do_clear_opmask(CPUX86State *env)
+{
+    memset(env->opmask_regs, 0, sizeof(env->opmask_regs));
+}
+
+static void do_xrstor_zmm_hi256(CPUX86State *env, target_ulong ptr,
+                                uintptr_t ra)
+{
+    int i, qword;
+#ifdef TARGET_X86_64
+    const int count = 16;
+#else
+    const int count = CPU_NB_REGS;
+#endif
+
+    for (i = 0; i < count; i++) {
+        for (qword = 4; qword < 8; qword++, ptr += 8) {
+            env->xmm_regs[i].ZMM_Q(qword) = cpu_ldq_data_ra(env, ptr, ra);
+        }
+    }
+}
+
+static void do_clear_zmm_hi256(CPUX86State *env)
+{
+    int i, qword;
+#ifdef TARGET_X86_64
+    const int count = 16;
+#else
+    const int count = CPU_NB_REGS;
+#endif
+
+    for (i = 0; i < count; i++) {
+        for (qword = 4; qword < 8; qword++) {
+            env->xmm_regs[i].ZMM_Q(qword) = 0;
+        }
+    }
+}
+
+static void do_xrstor_hi16_zmm(CPUX86State *env, target_ulong ptr,
+                               uintptr_t ra)
+{
+#ifdef TARGET_X86_64
+    int i, qword;
+
+    for (i = 16; i < 32; i++) {
+        for (qword = 0; qword < 8; qword++, ptr += 8) {
+            env->xmm_regs[i].ZMM_Q(qword) = cpu_ldq_data_ra(env, ptr, ra);
+        }
+    }
+#else
+    (void)env;
+    (void)ptr;
+    (void)ra;
+#endif
+}
+
+static void do_clear_hi16_zmm(CPUX86State *env)
+{
+#ifdef TARGET_X86_64
+    memset(&env->xmm_regs[16], 0, 16 * sizeof(env->xmm_regs[16]));
+#else
+    (void)env;
+#endif
+}
+
+static void do_xrstor_bytes(CPUX86State *env, target_ulong ptr,
+                            uint8_t *state, size_t size, uintptr_t ra)
+{
+    size_t offset;
+
+    for (offset = 0; offset < size; offset += 8) {
+        stq_le_p(state + offset, cpu_ldq_data_ra(env, ptr + offset, ra));
+    }
+}
+
+static bool xrstor_xtilecfg_palette1_valid(const uint8_t config[64])
+{
+    unsigned int i;
+
+    if (config[0] != 1) {
+        return false;
+    }
+    for (i = 2; i < 16; i++) {
+        if (config[i]) {
+            return false;
+        }
+    }
+    for (i = 32; i < 48; i++) {
+        if (config[i]) {
+            return false;
+        }
+    }
+    for (i = 56; i < 64; i++) {
+        if (config[i]) {
+            return false;
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        const unsigned int offset = 16 + i * 2;
+        const uint16_t colsb =
+            config[offset] | ((uint16_t)config[offset + 1] << 8);
+        const uint8_t rows = config[48 + i];
+
+        if (colsb > 64 || rows > 16 || ((colsb == 0) != (rows == 0))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void do_xrstor_xtilecfg(CPUX86State *env, target_ulong ptr,
+                               uintptr_t ra)
+{
+    uint8_t config[64];
+
+    do_xrstor_bytes(env, ptr, config, sizeof(config), ra);
+    if (xrstor_xtilecfg_palette1_valid(config)) {
+        memcpy(env->xtilecfg, config, sizeof(env->xtilecfg));
+    } else {
+        /* Palette zero and unsupported/invalid palettes restore init state. */
+        memset(env->xtilecfg, 0, sizeof(env->xtilecfg));
+    }
+}
+
+static void do_xrstor_xtiledata(CPUX86State *env, target_ulong ptr,
+                                uintptr_t ra)
+{
+    do_xrstor_bytes(env, ptr, &env->xtiledata[0][0],
+                    sizeof(env->xtiledata), ra);
+}
+
+static void do_clear_xtilecfg(CPUX86State *env)
+{
+    memset(env->xtilecfg, 0, sizeof(env->xtilecfg));
+}
+
+static void do_clear_xtiledata(CPUX86State *env)
+{
+    memset(env->xtiledata, 0, sizeof(env->xtiledata));
+}
+
 static void do_xrstor_apx(CPUX86State *env, target_ulong ptr, uintptr_t ra)
 {
 #ifdef TARGET_X86_64
@@ -1480,6 +1724,7 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
     uintptr_t ra = GETPC();
     uint64_t xstate_bv, xcomp_bv, reserve0;
     uint32_t mxcsr = 0;
+    size_t offset;
 
     rfbm &= env->xcr0;
 
@@ -1516,6 +1761,12 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
     reserve0 = cpu_ldq_data_ra(env, ptr + XO(header.reserve0), ra);
     if (xcomp_bv || reserve0) {
         raise_exception_ra(env, EXCP0D_GPF, ra);
+    }
+    for (offset = 0; offset < sizeof(((X86XSaveHeader *)0)->reserved);
+         offset += sizeof(uint64_t)) {
+        if (cpu_ldq_data_ra(env, ptr + XO(header.reserved) + offset, ra)) {
+            raise_exception_ra(env, EXCP0D_GPF, ra);
+        }
     }
 
     if (rfbm & XSTATE_SSE_MASK) {
@@ -1565,6 +1816,33 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
         }
         cpu_sync_bndcs_hflags(env);
     }
+    if (rfbm & XSTATE_OPMASK_MASK) {
+        if (xstate_bv & XSTATE_OPMASK_MASK) {
+            do_xrstor_opmask(env, ptr + XO(opmask_state), ra);
+            env->xstate_bv |= XSTATE_OPMASK_MASK;
+        } else {
+            do_clear_opmask(env);
+            env->xstate_bv &= ~XSTATE_OPMASK_MASK;
+        }
+    }
+    if (rfbm & XSTATE_ZMM_Hi256_MASK) {
+        if (xstate_bv & XSTATE_ZMM_Hi256_MASK) {
+            do_xrstor_zmm_hi256(env, ptr + XO(zmm_hi256_state), ra);
+            env->xstate_bv |= XSTATE_ZMM_Hi256_MASK;
+        } else {
+            do_clear_zmm_hi256(env);
+            env->xstate_bv &= ~XSTATE_ZMM_Hi256_MASK;
+        }
+    }
+    if (rfbm & XSTATE_Hi16_ZMM_MASK) {
+        if (xstate_bv & XSTATE_Hi16_ZMM_MASK) {
+            do_xrstor_hi16_zmm(env, ptr + XO(hi16_zmm_state), ra);
+            env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+        } else {
+            do_clear_hi16_zmm(env);
+            env->xstate_bv &= ~XSTATE_Hi16_ZMM_MASK;
+        }
+    }
     if (rfbm & XSTATE_APX_MASK) {
         if (xstate_bv & XSTATE_APX_MASK) {
             do_xrstor_apx(env, ptr + XO(apx_state), ra);
@@ -1584,6 +1862,31 @@ void helper_xrstor(CPUX86State *env, target_ulong ptr, uint64_t rfbm)
         if (env->pkru != old_pkru) {
             CPUState *cs = env_cpu(env);
             tlb_flush(cs);
+        }
+    }
+    if (rfbm & XSTATE_XTILE_CFG_MASK) {
+        if (xstate_bv & XSTATE_XTILE_CFG_MASK) {
+            do_xrstor_xtilecfg(env, ptr + XO(xtilecfg_state), ra);
+            if (env->xtilecfg[0] == 0) {
+                /* XRSTOR initializes an unsupported or palette-zero
+                 * configuration instead of faulting.  Keep XINUSE in sync
+                 * with that architectural init state. */
+                env->xstate_bv &= ~XSTATE_XTILE_CFG_MASK;
+            } else {
+                env->xstate_bv |= XSTATE_XTILE_CFG_MASK;
+            }
+        } else {
+            do_clear_xtilecfg(env);
+            env->xstate_bv &= ~XSTATE_XTILE_CFG_MASK;
+        }
+    }
+    if (rfbm & XSTATE_XTILE_DATA_MASK) {
+        if (xstate_bv & XSTATE_XTILE_DATA_MASK) {
+            do_xrstor_xtiledata(env, ptr + XO(xtiledata_state), ra);
+            env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
+        } else {
+            do_clear_xtiledata(env);
+            env->xstate_bv &= ~XSTATE_XTILE_DATA_MASK;
         }
     }
 }
@@ -1613,6 +1916,11 @@ void helper_xsetbv(CPUX86State *env, uint32_t ecx, uint64_t mask)
 {
     uint32_t dummy, ena_lo, ena_hi;
     uint64_t ena;
+    const uint64_t avx512_state =
+        XSTATE_OPMASK_MASK | XSTATE_ZMM_Hi256_MASK |
+        XSTATE_Hi16_ZMM_MASK;
+    const uint64_t tile_state =
+        XSTATE_XTILE_CFG_MASK | XSTATE_XTILE_DATA_MASK;
 
     /* The OS must have enabled XSAVE.  */
     if (!(env->cr[4] & CR4_OSXSAVE_MASK)) {
@@ -1626,6 +1934,19 @@ void helper_xsetbv(CPUX86State *env, uint32_t ecx, uint64_t mask)
 
     /* YMM state depends on SSE state and cannot be enabled on its own. */
     if ((mask & (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) == XSTATE_YMM_MASK) {
+        goto do_gpf;
+    }
+
+    /* AVX-512 state is enabled as one group and depends on SSE and YMM. */
+    if ((mask & avx512_state) &&
+        ((mask & avx512_state) != avx512_state ||
+         (mask & (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) !=
+             (XSTATE_SSE_MASK | XSTATE_YMM_MASK))) {
+        goto do_gpf;
+    }
+
+    /* TILECFG and TILEDATA are enabled and disabled as one unit. */
+    if ((mask & tile_state) && (mask & tile_state) != tile_state) {
         goto do_gpf;
     }
 

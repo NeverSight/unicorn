@@ -573,6 +573,18 @@ static CPUCacheInfo legacy_l3_cache = {
 #define INTEL_PT_MINIMAL_ECX     0x7
 /* generated packets which contain IP payloads have LIP values */
 #define INTEL_PT_IP_LIP          (1 << 31)
+
+/* CPUID Leaf 0x1d AMX tile enumeration constants. */
+#define INTEL_AMX_TILE_MAX_SUBLEAF 1
+#define INTEL_AMX_TOTAL_TILE_BYTES 0x2000
+#define INTEL_AMX_BYTES_PER_TILE   0x400
+#define INTEL_AMX_BYTES_PER_ROW    0x40
+#define INTEL_AMX_TILE_MAX_NAMES   8
+#define INTEL_AMX_TILE_MAX_ROWS    0x10
+
+/* CPUID Leaf 0x1e AMX TMUL enumeration constants. */
+#define INTEL_AMX_TMUL_MAX_K       0x10
+#define INTEL_AMX_TMUL_MAX_N       0x40
 #define INTEL_PT_ADDR_RANGES_NUM 0x2 /* Number of configurable address ranges */
 #define INTEL_PT_ADDR_RANGES_NUM_MASK 0x3
 #define INTEL_PT_MTC_BITMAP      (0x0249 << 16) /* Support ART(0,3,6,9) */
@@ -640,25 +652,39 @@ static CPUCacheInfo legacy_l3_cache = {
           CPUID_7_0_EBX_BMI1 | CPUID_7_0_EBX_BMI2 | CPUID_7_0_EBX_AVX2 | \
           CPUID_7_0_EBX_ADX | TCG_INVPCID_FEATURES | \
           CPUID_7_0_EBX_AVX512F | \
-          CPUID_7_0_EBX_AVX512DQ | CPUID_7_0_EBX_AVX512VL | \
+          CPUID_7_0_EBX_AVX512DQ | CPUID_7_0_EBX_AVX512ER | \
+          CPUID_7_0_EBX_AVX512VL | \
           CPUID_7_0_EBX_PCOMMIT | CPUID_7_0_EBX_CLFLUSHOPT |            \
           CPUID_7_0_EBX_CLWB | CPUID_7_0_EBX_MPX | CPUID_7_0_EBX_FSGSBASE | \
           CPUID_7_0_EBX_ERMS | CPUID_7_0_EBX_SHA_NI | CPUID_7_0_EBX_RDSEED)
-          /* missing:
-          CPUID_7_0_EBX_HLE, CPUID_7_0_EBX_RTM */
+          /* AVX512PF, BW, CD and IFMA stay hidden until every form is
+           * emulated.  CPUID_7_0_EBX_HLE and CPUID_7_0_EBX_RTM are also
+           * unavailable. */
 #define TCG_7_0_ECX_FEATURES (CPUID_7_0_ECX_PKU | CPUID_7_0_ECX_GFNI | \
           CPUID_7_0_ECX_VPCLMULQDQ | CPUID_7_0_ECX_RDPID | \
           CPUID_7_0_ECX_MOVDIRI | CPUID_7_0_ECX_MOVDIR64B | \
           TCG_ENQCMD_FEATURES | \
           /* CPUID_7_0_ECX_OSPKE is dynamic */ \
           CPUID_7_0_ECX_LA57)
-#define TCG_7_0_EDX_FEATURES 0
+          /* VBMI, VBMI2, VAES, VNNI, BITALG and VPOPCNTDQ stay hidden until
+           * every form is emulated. */
+#define TCG_7_0_EDX_FEATURES \
+    (CPUID_7_0_EDX_AVX512_4VNNIW | CPUID_7_0_EDX_AVX512_4FMAPS | \
+     CPUID_7_0_EDX_AMX_BF16 | CPUID_7_0_EDX_AMX_TILE | \
+     CPUID_7_0_EDX_AMX_INT8)
 #define TCG_7_1_EAX_FEATURES \
     (CPUID_7_1_EAX_RAO_INT | CPUID_7_1_EAX_CMPCCXADD | \
-     CPUID_7_1_EAX_MOVRS)
+     CPUID_7_1_EAX_AMX_FP16 | CPUID_7_1_EAX_MOVRS)
 #define TCG_7_1_ECX_FEATURES CPUID_7_1_ECX_MSR_IMM
-#define TCG_7_1_EDX_FEATURES CPUID_7_1_EDX_APX_F
+#define TCG_7_1_EDX_FEATURES \
+    (CPUID_7_1_EDX_AMX_COMPLEX | CPUID_7_1_EDX_APX_F)
 #define TCG_29_0_EBX_FEATURES CPUID_29_0_EBX_NCI_NDD_NF
+#define TCG_1E_1_EAX_FEATURES \
+    (CPUID_1E_1_EAX_AMX_INT8_ALIAS | \
+     CPUID_1E_1_EAX_AMX_BF16_ALIAS | \
+     CPUID_1E_1_EAX_AMX_COMPLEX_ALIAS | \
+     CPUID_1E_1_EAX_AMX_FP16_ALIAS | CPUID_1E_1_EAX_AMX_FP8 | \
+     CPUID_1E_1_EAX_AMX_AVX512 | CPUID_1E_1_EAX_AMX_MOVRS)
 #define TCG_APM_FEATURES 0
 #define TCG_6_EAX_FEATURES CPUID_6_EAX_ARAT
 #define TCG_XSAVE_FEATURES (CPUID_XSAVE_XSAVEOPT | CPUID_XSAVE_XGETBV1)
@@ -874,8 +900,8 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
             NULL, NULL, "md-clear", NULL,
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL /* pconfig */, NULL,
-            NULL, NULL, NULL, NULL,
-            NULL, NULL, "spec-ctrl", "stibp",
+            NULL, NULL, "amx-bf16", NULL,
+            "amx-tile", "amx-int8", "spec-ctrl", "stibp",
             NULL, "arch-capabilities", "core-capability", "ssbd",
         },
         .cpuid = {
@@ -893,7 +919,7 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL,
+            NULL, "amx-fp16", NULL, NULL,
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, "movrs",
         },
@@ -928,7 +954,7 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
         .feat_names = {
             NULL, NULL, NULL, NULL,
             NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL,
+            "amx-complex", NULL, NULL, NULL,
             NULL, NULL, NULL, "user-msr",
             NULL, NULL, NULL, NULL,
             NULL, "apx-f", NULL, NULL,
@@ -960,6 +986,26 @@ static FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
             .reg = R_EBX,
         },
         .tcg_features = TCG_29_0_EBX_FEATURES,
+    },
+    [FEAT_1E_1_EAX] = {
+        .type = CPUID_FEATURE_WORD,
+        .feat_names = {
+            "amx-int8-alias", "amx-bf16-alias",
+            "amx-complex-alias", "amx-fp16-alias",
+            "amx-fp8", NULL, NULL, "amx-avx512",
+            "amx-movrs", NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+        },
+        .cpuid = {
+            .eax = 0x1e,
+            .needs_ecx = true, .ecx = 1,
+            .reg = R_EAX,
+        },
+        .tcg_features = TCG_1E_1_EAX_FEATURES,
     },
     [FEAT_8000_0007_EDX] = {
         .type = CPUID_FEATURE_WORD,
@@ -1272,6 +1318,7 @@ static const X86RegisterInfo32 x86_reg_info_32[CPU_NB_REGS32] = {
 typedef struct ExtSaveArea {
     uint32_t feature, bits;
     uint32_t offset, size;
+    uint32_t ecx;
 } ExtSaveArea;
 
 static const ExtSaveArea x86_ext_save_areas[] = {
@@ -1317,6 +1364,14 @@ static const ExtSaveArea x86_ext_save_areas[] = {
           { .feature = FEAT_7_0_ECX, .bits = CPUID_7_0_ECX_PKU,
             .offset = offsetof(X86XSaveArea, pkru_state),
             .size = sizeof(XSavePKRU) },
+    [XSTATE_XTILE_CFG_BIT] =
+          { .feature = FEAT_7_0_EDX, .bits = CPUID_7_0_EDX_AMX_TILE,
+            .offset = offsetof(X86XSaveArea, xtilecfg_state),
+            .size = sizeof(XSaveXTILECFG), .ecx = 2 },
+    [XSTATE_XTILE_DATA_BIT] =
+          { .feature = FEAT_7_0_EDX, .bits = CPUID_7_0_EDX_AMX_TILE,
+            .offset = offsetof(X86XSaveArea, xtiledata_state),
+            .size = sizeof(XSaveXTILEDATA), .ecx = 2 },
     [XSTATE_APX_BIT] =
           { .feature = FEAT_7_1_EDX, .bits = CPUID_7_1_EDX_APX_F,
             .offset = offsetof(X86XSaveArea, apx_state),
@@ -3893,12 +3948,17 @@ static X86CPUDefinition builtin_x86_defs[] = {
         .features[FEAT_7_0_ECX] =
             CPUID_7_0_ECX_MOVDIRI | CPUID_7_0_ECX_MOVDIR64B |
             TCG_ENQCMD_FEATURES,
+        .features[FEAT_7_0_EDX] =
+            CPUID_7_0_EDX_AMX_BF16 | CPUID_7_0_EDX_AMX_TILE |
+            CPUID_7_0_EDX_AMX_INT8,
         .features[FEAT_7_1_EAX] =
             CPUID_7_1_EAX_RAO_INT | CPUID_7_1_EAX_CMPCCXADD |
-            CPUID_7_1_EAX_MOVRS,
+            CPUID_7_1_EAX_AMX_FP16 | CPUID_7_1_EAX_MOVRS,
         .features[FEAT_7_1_ECX] = CPUID_7_1_ECX_MSR_IMM,
-        .features[FEAT_7_1_EDX] = CPUID_7_1_EDX_APX_F,
+        .features[FEAT_7_1_EDX] =
+            CPUID_7_1_EDX_AMX_COMPLEX | CPUID_7_1_EDX_APX_F,
         .features[FEAT_29_0_EBX] = CPUID_29_0_EBX_NCI_NDD_NF,
+        .features[FEAT_1E_1_EAX] = TCG_1E_1_EAX_FEATURES,
         .features[FEAT_8000_0001_EDX] =
             CPUID_EXT2_LM | CPUID_EXT2_RDTSCP | CPUID_EXT2_NX |
             CPUID_EXT2_SYSCALL,
@@ -4313,6 +4373,75 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
         assert(!(*eax & ~0x1f));
         *ebx &= 0xffff; /* The count doesn't need to be reliable. */
         break;
+    case 0x1D:
+        /* AMX Tile Information Enumeration Leaf */
+        *eax = *ebx = *ecx = *edx = 0;
+        if (!(env->features[FEAT_7_0_EDX] & CPUID_7_0_EDX_AMX_TILE)) {
+            break;
+        }
+        if (count == 0) {
+            *eax = INTEL_AMX_TILE_MAX_SUBLEAF;
+        } else if (count == 1) {
+            *eax = INTEL_AMX_TOTAL_TILE_BYTES |
+                   (INTEL_AMX_BYTES_PER_TILE << 16);
+            *ebx = INTEL_AMX_BYTES_PER_ROW |
+                   (INTEL_AMX_TILE_MAX_NAMES << 16);
+            *ecx = INTEL_AMX_TILE_MAX_ROWS;
+        }
+        break;
+    case 0x1E:
+        /* AMX TMUL Information Enumeration Leaf */
+        *eax = *ebx = *ecx = *edx = 0;
+        if (!(env->features[FEAT_7_0_EDX] & CPUID_7_0_EDX_AMX_TILE)) {
+            break;
+        }
+        if (count == 0) {
+            /* EAX is reserved for the TMUL main leaf. */
+            *ebx = INTEL_AMX_TMUL_MAX_K |
+                   (INTEL_AMX_TMUL_MAX_N << 8);
+        } else if (count == 1) {
+            const uint64_t avx512_xstate =
+                XSTATE_FP_MASK | XSTATE_SSE_MASK | XSTATE_YMM_MASK |
+                XSTATE_OPMASK_MASK | XSTATE_ZMM_Hi256_MASK |
+                XSTATE_Hi16_ZMM_MASK;
+
+            *eax = env->features[FEAT_1E_1_EAX];
+            /* Current CPUID leaves reserve bit 6. */
+            *eax &= ~(1U << 6);
+            /* Bits 3:0 are architectural aliases of the family bits in
+             * CPUID.7.  Keep them coherent when a caller customizes the CPU
+             * model instead of exposing a capability that its owner bit has
+             * disabled. */
+            if (!(env->features[FEAT_7_0_EDX] &
+                  CPUID_7_0_EDX_AMX_INT8)) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_INT8_ALIAS;
+            }
+            if (!(env->features[FEAT_7_0_EDX] &
+                  CPUID_7_0_EDX_AMX_BF16)) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_BF16_ALIAS;
+            }
+            if (!(env->features[FEAT_7_1_EDX] &
+                  CPUID_7_1_EDX_AMX_COMPLEX)) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_COMPLEX_ALIAS;
+            }
+            if (!(env->features[FEAT_7_1_EAX] &
+                  CPUID_7_1_EAX_AMX_FP16)) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_FP16_ALIAS;
+            }
+            /* The AMX-AVX512 row instructions consume architectural
+             * AVX-512 register state.  Do not expose them on a custom model
+             * whose owner bit or XSAVE components cannot preserve it. */
+            if (!(env->features[FEAT_7_0_EBX] &
+                  CPUID_7_0_EBX_AVX512F) ||
+                (x86_cpu_xsave_components(cpu) & avx512_xstate) !=
+                    avx512_xstate) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_AVX512;
+            }
+            if (!(env->features[FEAT_7_1_EAX] & CPUID_7_1_EAX_MOVRS)) {
+                *eax &= ~CPUID_1E_1_EAX_AMX_MOVRS;
+            }
+        }
+        break;
     case 0x1F:
         /* V2 Extended Topology Enumeration Leaf */
         if (env->nr_dies < 2) {
@@ -4381,6 +4510,7 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
                 const ExtSaveArea *esa = &x86_ext_save_areas[count];
                 *eax = esa->size;
                 *ebx = esa->offset;
+                *ecx = esa->ecx;
             }
         }
         break;
@@ -4873,6 +5003,7 @@ static void x86_cpu_expand_features(X86CPU *cpu)
         x86_cpu_adjust_feat_level(cpu, FEAT_7_1_ECX);
         x86_cpu_adjust_feat_level(cpu, FEAT_7_1_EDX);
         x86_cpu_adjust_feat_level(cpu, FEAT_29_0_EBX);
+        x86_cpu_adjust_feat_level(cpu, FEAT_1E_1_EAX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0001_EDX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0001_ECX);
         x86_cpu_adjust_feat_level(cpu, FEAT_8000_0007_EDX);

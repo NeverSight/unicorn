@@ -41,6 +41,27 @@ void x86_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
     raise_exception_ra(&cpu->env, EXCP0D_GPF, retaddr);
 }
 
+/* Keep the architectural XSAVE in-use bitmap synchronized with every custom
+ * EVEX destination commit.  Callers reach these helpers only after all
+ * validation, memory access, and floating-point exception checks have
+ * completed, so a fault cannot expose a speculative XINUSE update. */
+static void evex_commit_zmm(CPUX86State *env, unsigned int dst,
+                            const ZMMReg *value)
+{
+    g_assert(dst < 32);
+    env->xmm_regs[dst] = *value;
+    env->xstate_bv |= dst < 16 ? XSTATE_ZMM_Hi256_MASK
+                               : XSTATE_Hi16_ZMM_MASK;
+}
+
+static void evex_commit_opmask(CPUX86State *env, unsigned int dst,
+                               uint64_t value)
+{
+    g_assert(dst < NB_OPMASK_REGS);
+    env->opmask_regs[dst] = value;
+    env->xstate_bv |= XSTATE_OPMASK_MASK;
+}
+
 static uint64_t evex_integer_get_element(const ZMMReg *reg, int element,
                                          int element_bytes)
 {
@@ -111,7 +132,7 @@ void helper_evex_vmovdqu_reg(CPUX86State *env, uint32_t desc)
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static int64_t evex_integer_signed_element(uint64_t value, int element_bytes)
@@ -426,7 +447,7 @@ void helper_evex_packed_int_reg(CPUX86State *env, uint32_t desc)
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static uint64_t evex_packed_shift_value(EVEXPackedShiftOp operation,
@@ -524,7 +545,7 @@ void helper_evex_packed_shift_reg(CPUX86State *env, uint32_t desc,
         for (int byte = vector_bytes; byte < 64; ++byte) {
             result.ZMM_B(byte) = 0;
         }
-        env->xmm_regs[dst] = result;
+        evex_commit_zmm(env, dst, &result);
         return;
     }
 
@@ -553,7 +574,7 @@ void helper_evex_packed_shift_reg(CPUX86State *env, uint32_t desc,
         for (int byte = vector_bytes; byte < 64; ++byte) {
             result.ZMM_B(byte) = 0;
         }
-        env->xmm_regs[dst] = result;
+        evex_commit_zmm(env, dst, &result);
         return;
     }
 
@@ -593,7 +614,7 @@ void helper_evex_packed_shift_reg(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_bit_shuffle_reg(CPUX86State *env, uint32_t desc)
@@ -617,7 +638,7 @@ void helper_evex_bit_shuffle_reg(CPUX86State *env, uint32_t desc)
             result |= UINT64_C(1) << byte;
         }
     }
-    env->opmask_regs[dst] = result;
+    evex_commit_opmask(env, dst, result);
 }
 
 void helper_evex_mask_test_reg(CPUX86State *env, uint32_t desc)
@@ -646,7 +667,7 @@ void helper_evex_mask_test_reg(CPUX86State *env, uint32_t desc)
             result |= UINT64_C(1) << element;
         }
     }
-    env->opmask_regs[dst] = result;
+    evex_commit_opmask(env, dst, result);
 }
 
 void helper_evex_ternlog_reg(CPUX86State *env, uint32_t desc,
@@ -691,7 +712,7 @@ void helper_evex_ternlog_reg(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_shuffle_imm_reg(CPUX86State *env, uint32_t desc,
@@ -740,7 +761,7 @@ void helper_evex_shuffle_imm_reg(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static int evex_lane_int_element_bytes(EVEXLaneIntOp operation)
@@ -1018,7 +1039,7 @@ void helper_evex_lane_int_reg(CPUX86State *env, uint32_t desc,
     for (int byte = result_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static void evex_dbpsadbw_apply(CPUX86State *env, uint32_t desc,
@@ -1072,7 +1093,7 @@ static void evex_dbpsadbw_apply(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_dbpsadbw_reg(CPUX86State *env, uint32_t desc,
@@ -1142,7 +1163,7 @@ void helper_evex_insert_scalar_lane(CPUX86State *env, uint32_t desc,
     for (int byte = 16; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_set_vector_scalar(CPUX86State *env, uint32_t desc,
@@ -1155,7 +1176,7 @@ void helper_evex_set_vector_scalar(CPUX86State *env, uint32_t desc,
     ZMMReg result = {0};
 
     evex_integer_set_element(&result, 0, element_bytes, value);
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static bool evex_scalar_move_active(CPUX86State *env, uint32_t desc)
@@ -1193,7 +1214,7 @@ void helper_evex_scalar_move_reg(CPUX86State *env, uint32_t desc)
     for (int byte = 16; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_scalar_move_load(CPUX86State *env, target_ulong address,
@@ -1219,7 +1240,7 @@ void helper_evex_scalar_move_load(CPUX86State *env, target_ulong address,
     for (int byte = element_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_scalar_move_store(CPUX86State *env, target_ulong address,
@@ -1272,7 +1293,7 @@ static void evex_broadcast_lane_apply(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_broadcast_lane_reg(CPUX86State *env, uint32_t desc)
@@ -1409,7 +1430,7 @@ static void evex_crypto_apply(CPUX86State *env, uint32_t desc,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_crypto_reg(CPUX86State *env, uint32_t desc,
@@ -1480,7 +1501,7 @@ void helper_evex_mask_convert_reg(CPUX86State *env, uint32_t desc)
                 result |= UINT64_C(1) << element;
             }
         }
-        env->opmask_regs[dst & 7] = result;
+        evex_commit_opmask(env, dst & 7, result);
         return;
     }
 
@@ -1501,7 +1522,7 @@ void helper_evex_mask_convert_reg(CPUX86State *env, uint32_t desc)
 
             evex_integer_set_element(&result, element, element_bytes, value);
         }
-        env->xmm_regs[dst] = result;
+        evex_commit_zmm(env, dst, &result);
     }
 }
 
@@ -1538,7 +1559,7 @@ void helper_evex_widen_reg(CPUX86State *env, uint32_t desc)
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_narrow_reg(CPUX86State *env, uint32_t desc)
@@ -1594,7 +1615,7 @@ void helper_evex_narrow_reg(CPUX86State *env, uint32_t desc)
     for (int byte = packed_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static bool evex_integer_compare(uint64_t left, uint64_t right,
@@ -1657,7 +1678,7 @@ void helper_evex_packed_compare_reg(CPUX86State *env, uint32_t desc)
             result |= UINT64_C(1) << element;
         }
     }
-    env->opmask_regs[dst] = result;
+    evex_commit_opmask(env, dst, result);
 }
 
 void helper_evex_compress_expand_reg(CPUX86State *env, uint32_t desc)
@@ -1706,7 +1727,7 @@ void helper_evex_compress_expand_reg(CPUX86State *env, uint32_t desc)
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static uint64_t evex_vmovdqu_load_element(CPUX86State *env,
@@ -1772,7 +1793,7 @@ static void evex_approx14_apply(CPUX86State *env, uint32_t desc,
             result.ZMM_B(byte) = 0;
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_approx14_reg(CPUX86State *env, uint32_t desc)
@@ -2017,7 +2038,7 @@ static void evex_range_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_range_reg(CPUX86State *env, uint32_t desc)
@@ -2379,7 +2400,7 @@ static void evex_fp_transform_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_fp_transform_reg(CPUX86State *env, uint32_t desc,
@@ -2652,7 +2673,7 @@ static void evex_get_fp_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_get_fp_reg(CPUX86State *env, uint32_t desc)
@@ -2927,7 +2948,7 @@ static void evex_scalef_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_scalef_reg(CPUX86State *env, uint32_t desc)
@@ -3052,7 +3073,7 @@ static void evex_approx28_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_approx28_reg(CPUX86State *env, uint32_t desc)
@@ -3270,7 +3291,7 @@ static void evex_fp_arith_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_fp_arith_reg(CPUX86State *env, uint32_t desc)
@@ -3497,7 +3518,7 @@ static void evex_fma_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_fma_reg(CPUX86State *env, uint32_t desc)
@@ -3616,7 +3637,7 @@ void helper_evex_four_fma_load(CPUX86State *env, target_ulong address,
         }
     }
     evex_four_raise_unmasked(env, &status);
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static int32_t evex_signed_dword_saturate(int64_t value)
@@ -3673,7 +3694,7 @@ void helper_evex_four_vnni_load(CPUX86State *env, target_ulong address,
             result.ZMM_L(element) = 0;
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 static bool evex_fpclass_lane(uint64_t value, int element_bytes,
@@ -3737,7 +3758,7 @@ static void evex_fpclass_apply(CPUX86State *env, uint32_t desc,
             result |= UINT64_C(1) << element;
         }
     }
-    env->opmask_regs[dst] = result;
+    evex_commit_opmask(env, dst, result);
 }
 
 void helper_evex_fpclass_reg(CPUX86State *env, uint32_t desc,
@@ -4004,7 +4025,7 @@ static void evex_fcmp_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->opmask_regs[dst] = result;
+    evex_commit_opmask(env, dst, result);
 }
 
 void helper_evex_fcmp_reg(CPUX86State *env, uint32_t desc,
@@ -4306,7 +4327,7 @@ static void evex_convert_apply(CPUX86State *env, uint32_t desc,
             raise_exception_ra(env, EXCP13_XM, GETPC());
         }
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_convert_reg(CPUX86State *env, uint32_t desc)
@@ -4519,7 +4540,7 @@ static void evex_scalar_convert_apply(CPUX86State *env, uint32_t desc,
         g_assert_not_reached();
 #endif
     } else {
-        env->xmm_regs[dst] = result;
+        evex_commit_zmm(env, dst, &result);
     }
 }
 
@@ -4613,7 +4634,7 @@ void helper_evex_vmovdqu_load(CPUX86State *env, target_ulong address,
     for (int byte = vector_bytes; byte < 64; ++byte) {
         result.ZMM_B(byte) = 0;
     }
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
 }
 
 void helper_evex_vmovdqu_store(CPUX86State *env, target_ulong address,
@@ -4707,6 +4728,72 @@ void helper_apx_memory_check(CPUX86State *env, target_ulong address,
             (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF;
 
         raise_exception_err_ra(env, exception, 0, GETPC());
+    }
+}
+
+static void apx_evex_check_memory_range(CPUX86State *env, uint64_t address,
+                                        uint32_t access_bytes,
+                                        uint32_t desc, uintptr_t ra)
+{
+    if (address > UINT64_MAX - (access_bytes - 1) ||
+        !apx_canonical_address(env, address) ||
+        !apx_canonical_address(env, address + access_bytes - 1)) {
+        const int exception =
+            (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF;
+
+        raise_exception_err_ra(env, exception, 0, ra);
+    }
+}
+
+void helper_apx_evex_memory_check(CPUX86State *env, target_ulong address,
+                                  uint32_t mask_reg,
+                                  uint32_t active_elements,
+                                  uint32_t access_desc, uint32_t desc)
+{
+    uint64_t mask = mask_reg ? env->opmask_regs[mask_reg] : UINT64_MAX;
+    const uint32_t modulo_elements =
+        access_desc >> APX_MEMORY_MODULO_ELEMENTS_SHIFT;
+    const uint32_t access_bytes =
+        access_desc & APX_MEMORY_ACCESS_BYTES_MASK;
+    const uintptr_t ra = GETPC();
+
+    if (active_elements < 64) {
+        mask &= (UINT64_C(1) << active_elements) - 1;
+    }
+    if (modulo_elements) {
+        uint64_t needed = 0;
+
+        for (uint32_t element = 0; element < active_elements; ++element) {
+            if ((mask >> element) & 1) {
+                needed |= UINT64_C(1) << (element % modulo_elements);
+            }
+        }
+        mask = needed;
+        active_elements = modulo_elements;
+    }
+    if (!mask) {
+        return;
+    }
+    if (desc & APX_MEMORY_TUPLE) {
+        apx_evex_check_memory_range(env, address, access_bytes, desc, ra);
+        return;
+    }
+
+    for (uint32_t element = 0; element < active_elements; ++element) {
+        uint64_t element_address;
+
+        if (!((mask >> element) & 1)) {
+            continue;
+        }
+        if (element > (UINT64_MAX - address) / access_bytes) {
+            const int exception =
+                (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF;
+
+            raise_exception_err_ra(env, exception, 0, ra);
+        }
+        element_address = address + (uint64_t)element * access_bytes;
+        apx_evex_check_memory_range(env, element_address, access_bytes,
+                                    desc, ra);
     }
 }
 
@@ -5108,8 +5195,12 @@ void helper_amx_ldtilecfg(CPUX86State *env, target_ulong address,
     memset(env->xtiledata, 0, sizeof(env->xtiledata));
     if (config[0] == 0) {
         memset(env->xtilecfg, 0, sizeof(env->xtilecfg));
+        env->xstate_bv &=
+            ~(XSTATE_XTILE_CFG_MASK | XSTATE_XTILE_DATA_MASK);
     } else {
         memcpy(env->xtilecfg, config, sizeof(env->xtilecfg));
+        env->xstate_bv |= XSTATE_XTILE_CFG_MASK;
+        env->xstate_bv &= ~XSTATE_XTILE_DATA_MASK;
     }
 }
 
@@ -5139,6 +5230,8 @@ void helper_amx_tilerelease(CPUX86State *env)
 {
     memset(env->xtilecfg, 0, sizeof(env->xtilecfg));
     memset(env->xtiledata, 0, sizeof(env->xtiledata));
+    env->xstate_bv &=
+        ~(XSTATE_XTILE_CFG_MASK | XSTATE_XTILE_DATA_MASK);
 }
 
 void helper_amx_tilezero(CPUX86State *env, uint32_t tile)
@@ -5151,6 +5244,7 @@ void helper_amx_tilezero(CPUX86State *env, uint32_t tile)
 
     memset(env->xtiledata[tile], 0, sizeof(env->xtiledata[tile]));
     env->xtilecfg[1] = 0;
+    env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
 }
 
 static uint64_t amx_row_address(CPUX86State *env, uint64_t base,
@@ -5196,6 +5290,10 @@ void helper_amx_tileloadstore(CPUX86State *env, target_ulong base,
     }
 
     if (!store) {
+        /* A valid TILELOAD begins modifying tile data before its first
+         * restartable memory operation.  Preserve that architectural
+         * partial-progress state if a later row faults. */
+        env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
         memset(&env->xtiledata[tile][start * 64], 0,
                sizeof(env->xtiledata[tile]) - start * 64);
     }
@@ -5418,57 +5516,6 @@ static void amx_compute_pair_float(CPUX86State *env, unsigned int dst,
                     &env->xtiledata[dst][m * 64 + n * 4]));
                 const float32 value = amx_float32_add(
                     accumulator, dot, &arithmetic_status);
-
-                stl_le_p(&result[m * 64 + n * 4], float32_val(value));
-            }
-        }
-    }
-}
-
-static float32 amx_tf32_value(uint32_t value)
-{
-    const uint32_t exponent = value & UINT32_C(0x7f800000);
-    const uint32_t fraction = value & UINT32_C(0x007fffff);
-
-    if (exponent == UINT32_C(0x7f800000) && fraction &&
-        !(fraction & UINT32_C(0x00400000))) {
-        value |= UINT32_C(0x00400000);
-    }
-    return make_float32(value & UINT32_C(0xffffe000));
-}
-
-static void amx_compute_tf32(CPUX86State *env, unsigned int dst,
-                             unsigned int src1, unsigned int src2,
-                             uint8_t result[1024])
-{
-    const unsigned int rows = amx_tile_rows(env, dst);
-    const unsigned int columns = amx_tile_colsb(env, dst) / 4;
-    const unsigned int inner = amx_tile_colsb(env, src1) / 4;
-    /*
-     * TMMULTF32PS was withdrawn after ISE revision 061.  For compatibility
-     * with its last published definition, follow the instruction-specific
-     * prose: FP32 denormal inputs are handled rather than treated as zero.
-     */
-    float_status status = amx_float_status(false);
-
-    for (unsigned int m = 0; m < rows; ++m) {
-        for (unsigned int n = 0; n < columns; ++n) {
-            float32 dot = make_float32(0);
-
-            for (unsigned int k = 0; k < inner; ++k) {
-                const float32 left = amx_tf32_value(ldl_le_p(
-                    &env->xtiledata[src1][m * 64 + k * 4]));
-                const float32 right = amx_tf32_value(ldl_le_p(
-                    &env->xtiledata[src2][k * 64 + n * 4]));
-
-                dot = amx_float32_fma(left, right, dot, &status);
-            }
-
-            {
-                const float32 accumulator = make_float32(ldl_le_p(
-                    &env->xtiledata[dst][m * 64 + n * 4]));
-                const float32 value =
-                    amx_float32_add(accumulator, dot, &status);
 
                 stl_le_p(&result[m * 64 + n * 4], float32_val(value));
             }
@@ -5699,9 +5746,6 @@ void helper_amx_compute(CPUX86State *env, uint32_t desc)
     case AMX_COMPUTE_TDPHF8PS:
         amx_compute_fp8(env, dst, src1, src2, operation, result);
         break;
-    case AMX_COMPUTE_TMMULTF32PS:
-        amx_compute_tf32(env, dst, src1, src2, result);
-        break;
     default:
         amx_raise_ud(env);
         return;
@@ -5709,6 +5753,7 @@ void helper_amx_compute(CPUX86State *env, uint32_t desc)
 
     memcpy(env->xtiledata[dst], result, sizeof(result));
     env->xtilecfg[1] = 0;
+    env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
 }
 
 static uint16_t amx_float32_to_bfloat16(uint32_t value)
@@ -5836,7 +5881,7 @@ void helper_amx_tile_row(CPUX86State *env, uint32_t desc)
         g_assert_not_reached();
     }
 
-    env->xmm_regs[dst] = result;
+    evex_commit_zmm(env, dst, &result);
     env->xtilecfg[1] = 0;
 }
 

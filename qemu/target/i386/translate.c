@@ -167,6 +167,7 @@ typedef struct DisasContext {
     int cpuid_ext3_features;
     int cpuid_7_0_ebx_features;
     int cpuid_7_0_ecx_features;
+    int cpuid_7_0_edx_features;
     int cpuid_7_1_eax_features;
     int cpuid_7_1_ecx_features;
     int cpuid_7_1_edx_features;
@@ -2429,15 +2430,6 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm)
     gen_lea_v_seg(s, s->aflag, ea, a.def_seg, s->override);
 }
 
-static void gen_lea_modrm_evex(CPUX86State *env, DisasContext *s, int modrm,
-                               int disp8_scale)
-{
-    AddressParts a = gen_lea_modrm_0_scaled(env, s, modrm, disp8_scale);
-    TCGv ea = gen_lea_modrm_1(s, a);
-
-    gen_lea_v_seg(s, s->aflag, ea, a.def_seg, s->override);
-}
-
 static void gen_nop_modrm(CPUX86State *env, DisasContext *s, int modrm)
 {
     (void)gen_lea_modrm_0(env, s, modrm);
@@ -3683,6 +3675,23 @@ static bool x86_avx2_enabled(const DisasContext *s)
 {
     return x86_avx_enabled(s) &&
            (s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX2);
+}
+
+static bool x86_avx512_enabled(const DisasContext *s)
+{
+    return (s->flags & HF_AVX512_EN_MASK) != 0;
+}
+
+static bool x86_evex_require_features(DisasContext *s, uint32_t ebx,
+                                      uint32_t ecx, uint32_t edx)
+{
+    if ((s->cpuid_7_0_ebx_features & ebx) != ebx ||
+        (s->cpuid_7_0_ecx_features & ecx) != ecx ||
+        (s->cpuid_7_0_edx_features & edx) != edx) {
+        gen_illegal_opcode(s);
+        return false;
+    }
+    return true;
 }
 
 /* These one-byte 0f opcodes acquire a 256-bit integer form only with AVX2.
@@ -5672,6 +5681,50 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
     else
         b1 = 0;
 #ifdef TARGET_X86_64
+    if (b == 0x38 && !(s->prefix & PREFIX_VEX)) {
+        const int opcode =
+            translator_ldub(env->uc->tcg_ctx, env, s->pc);
+
+        if (opcode == 0x8a || opcode == 0x8b) {
+            AddressParts address;
+            TCGv ea;
+            bool stack_segment;
+            unsigned int width;
+
+            (void)x86_ldub_code(env, s);
+            if (!CODE64(s) ||
+                !(s->cpuid_7_1_eax_features & CPUID_7_1_EAX_MOVRS) ||
+                (s->prefix & (PREFIX_LOCK | PREFIX_REPZ | PREFIX_REPNZ))) {
+                goto illegal_op;
+            }
+
+            ot = opcode == 0x8a ? MO_8 : s->dflag;
+            width = 1U << ot;
+            modrm = x86_ldub_code(env, s);
+            if ((modrm >> 6) == 3) {
+                goto illegal_op;
+            }
+            reg = ((modrm >> 3) & 7) | rex_r;
+            address = gen_lea_modrm_0(env, s, modrm);
+            stack_segment =
+                s->override == R_SS ||
+                (s->override < 0 && address.def_seg == R_SS);
+            ea = gen_lea_modrm_1(s, address);
+            gen_lea_v_seg(s, s->aflag, ea, address.def_seg, s->override);
+            gen_helper_apx_evex_memory_check(
+                tcg_ctx, tcg_ctx->cpu_env, s->A0,
+                tcg_const_i32(tcg_ctx, 0), tcg_const_i32(tcg_ctx, 1),
+                tcg_const_i32(tcg_ctx, width),
+                tcg_const_i32(tcg_ctx,
+                              (stack_segment ? APX_MEMORY_SS : 0) |
+                                  APX_MEMORY_TUPLE));
+            gen_op_ld_v(s, ot, s->T0, s->A0);
+            /* MOVRS changes speculative behavior only; Unicorn's observable
+             * result and fault model are the corresponding scalar load. */
+            gen_op_mov_reg_v(s, ot, reg, s->T0);
+            return;
+        }
+    }
     if (b == 0x38 && (b1 == 2 || b1 == 3) &&
         !(s->prefix & PREFIX_VEX) &&
         translator_ldub(env->uc->tcg_ctx, env, s->pc) == 0xf8) {
@@ -5694,10 +5747,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
         address = gen_lea_modrm_0(env, s, modrm);
         stack_segment =
             s->override == R_SS ||
-            (s->override < 0 &&
-             (address.def_seg == R_SS ||
-              (CODE64(s) && address.base >= 0 &&
-               ((address.base & 7) == 4 || (address.base & 7) == 5))));
+            (s->override < 0 && address.def_seg == R_SS);
         destination = tcg_temp_new(tcg_ctx);
         source = tcg_temp_new(tcg_ctx);
         tcg_gen_mov_tl(tcg_ctx, source, gen_lea_modrm_1(s, address));
@@ -5750,10 +5800,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
         address = gen_lea_modrm_0(env, s, modrm);
         stack_segment =
             s->override == R_SS ||
-            (s->override < 0 &&
-             (address.def_seg == R_SS ||
-              (CODE64(s) && address.base >= 0 &&
-               ((address.base & 7) == 4 || (address.base & 7) == 5))));
+            (s->override < 0 && address.def_seg == R_SS);
         ea = gen_lea_modrm_1(s, address);
         gen_lea_v_seg(s, s->aflag, ea, address.def_seg, s->override);
         if (s->cpl != 0) {
@@ -8204,6 +8251,47 @@ static bool decode_vex_opmask_width(DisasContext *s, int required_l,
     return true;
 }
 
+static bool x86_opmask_width_feature_enabled(const DisasContext *s,
+                                              uint64_t width_mask,
+                                              bool word_requires_dq)
+{
+    uint32_t required = 0;
+
+    if (width_mask == UINT8_MAX ||
+        (word_requires_dq && width_mask == UINT16_MAX)) {
+        required = CPUID_7_0_EBX_AVX512DQ;
+    } else if (width_mask == UINT32_MAX || width_mask == UINT64_MAX) {
+        required = CPUID_7_0_EBX_AVX512BW;
+    }
+    return (s->cpuid_7_0_ebx_features & required) == required;
+}
+
+static bool x86_opmask_state_ready(DisasContext *s)
+{
+    if (s->flags & HF_TS_MASK) {
+        gen_exception(s, EXCP07_PREX, s->pc_start - s->cs_base);
+        return false;
+    }
+    if (s->flags & HF_EM_MASK) {
+        gen_illegal_opcode(s);
+        return false;
+    }
+    return true;
+}
+
+static void gen_opmask_mark_inuse(DisasContext *s)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i64 inuse = tcg_temp_new_i64(tcg_ctx);
+
+    tcg_gen_ld_i64(tcg_ctx, inuse, tcg_ctx->cpu_env,
+                   offsetof(CPUX86State, xstate_bv));
+    tcg_gen_ori_i64(tcg_ctx, inuse, inuse, XSTATE_OPMASK_MASK);
+    tcg_gen_st_i64(tcg_ctx, inuse, tcg_ctx->cpu_env,
+                   offsetof(CPUX86State, xstate_bv));
+    tcg_temp_free_i64(tcg_ctx, inuse);
+}
+
 static VEXUserMSRDecodeResult gen_vex_user_msr(CPUX86State *env,
                                                DisasContext *s, int b)
 {
@@ -8294,6 +8382,7 @@ static void gen_opmask_binary(DisasContext *s, int dst, int src1, int src2,
     tcg_gen_st_i64(tcg_ctx, lhs, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
 
     tcg_temp_free_i64(tcg_ctx, lhs);
     tcg_temp_free_i64(tcg_ctx, rhs);
@@ -8315,6 +8404,7 @@ static void gen_opmask_knot(DisasContext *s, int dst, int src,
     tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
 
     tcg_temp_free_i64(tcg_ctx, value);
 }
@@ -8339,6 +8429,7 @@ static void gen_opmask_kunpack(DisasContext *s, int dst, int src1, int src2,
     tcg_gen_st_i64(tcg_ctx, high, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
 
     tcg_temp_free_i64(tcg_ctx, high);
     tcg_temp_free_i64(tcg_ctx, low);
@@ -8370,6 +8461,7 @@ static void gen_opmask_shift(DisasContext *s, int dst, int src,
     tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
 
     tcg_temp_free_i64(tcg_ctx, value);
 }
@@ -8440,6 +8532,7 @@ static void gen_opmask_kmov_k_to_k(DisasContext *s, int dst, int src,
     tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
     tcg_temp_free_i64(tcg_ctx, value);
 }
 
@@ -8455,6 +8548,7 @@ static void gen_opmask_kmov_mem_to_k(CPUX86State *env, DisasContext *s,
     tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
     tcg_temp_free_i64(tcg_ctx, value);
 }
 
@@ -8486,6 +8580,7 @@ static void gen_opmask_kmov_gpr_to_k(DisasContext *s, int dst, int src,
     tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                    offsetof(CPUX86State, opmask_regs) +
                        dst * sizeof(uint64_t));
+    gen_opmask_mark_inuse(s);
     tcg_temp_free_i64(tcg_ctx, value);
 }
 
@@ -8600,6 +8695,12 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
             s->pc--;
             return VEX_OPMASK_NOT_HANDLED;
         }
+        if (!x86_avx512_enabled(s)) {
+            return VEX_OPMASK_INVALID;
+        }
+        if (!x86_opmask_state_ready(s)) {
+            return VEX_OPMASK_DECODED;
+        }
 
         /* KSHIFTR/KSHIFTL B/W/D/Q have L=0, pp=66 and reserved vvvv. */
         if (s->vex_l != 0 || !(s->prefix & PREFIX_DATA) ||
@@ -8624,6 +8725,9 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
         case 32: width_mask = UINT32_MAX; break;
         default: width_mask = UINT64_MAX; break;
         }
+        if (!x86_opmask_width_feature_enabled(s, width_mask, false)) {
+            return VEX_OPMASK_INVALID;
+        }
         gen_opmask_shift(s, (modrm >> 3) & 7, modrm & 7, width_mask,
                          width_bits, count, subopcode >= 0x32);
         return VEX_OPMASK_DECODED;
@@ -8638,11 +8742,21 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
         }
     }
 
+    if (!x86_avx512_enabled(s)) {
+        return VEX_OPMASK_INVALID;
+    }
+    if (!x86_opmask_state_ready(s)) {
+        return VEX_OPMASK_DECODED;
+    }
+
     if (b == 0x141 || b == 0x142 || b == 0x145 || b == 0x146 ||
         b == 0x147 || b == 0x14a) {
         /* KAND/KANDN/KOR/KXNOR/KXOR/KADD B/W/D/Q. */
         if (!decode_vex_opmask_width(s, 1, &width_mask) ||
             s->vex_v >= NB_OPMASK_REGS || rex_r || REX_X(s) || REX_B(s)) {
+            return VEX_OPMASK_INVALID;
+        }
+        if (!x86_opmask_width_feature_enabled(s, width_mask, b == 0x14a)) {
             return VEX_OPMASK_INVALID;
         }
 
@@ -8666,6 +8780,9 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
 
         if (!decode_vex_kmov_width(s, gpr_form, &width_mask, &width_bits) ||
             (width_bits == 64 && !CODE64(s))) {
+            return VEX_OPMASK_INVALID;
+        }
+        if (!x86_opmask_width_feature_enabled(s, width_mask, false)) {
             return VEX_OPMASK_INVALID;
         }
         modrm = x86_ldub_code(env, s);
@@ -8709,6 +8826,9 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
             rex_r || REX_X(s) || REX_B(s)) {
             return VEX_OPMASK_INVALID;
         }
+        if (!x86_opmask_width_feature_enabled(s, width_mask, false)) {
+            return VEX_OPMASK_INVALID;
+        }
 
         modrm = x86_ldub_code(env, s);
         if ((modrm >> 6) != 3) {
@@ -8738,6 +8858,10 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
         } else {
             return VEX_OPMASK_INVALID;
         }
+        if (element_bits != 8 &&
+            !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512BW)) {
+            return VEX_OPMASK_INVALID;
+        }
 
         modrm = x86_ldub_code(env, s);
         if ((modrm >> 6) != 3) {
@@ -8749,6 +8873,9 @@ static VEXOpmaskDecodeResult gen_vex_opmask(CPUX86State *env,
         /* KORTEST/KTEST B/W/D/Q: VEX.L0[.66].0F.W{0,1} 98/99 /r. */
         if (!decode_vex_opmask_width(s, 0, &width_mask) || s->vex_v != 0 ||
             rex_r || REX_X(s) || REX_B(s)) {
+            return VEX_OPMASK_INVALID;
+        }
+        if (!x86_opmask_width_feature_enabled(s, width_mask, b == 0x199)) {
             return VEX_OPMASK_INVALID;
         }
 
@@ -8790,10 +8917,59 @@ static bool vex_opcode_uses_vector_decoder(int b)
 }
 
 #ifdef TARGET_X86_64
+static bool x86_amx_enabled(const DisasContext *s)
+{
+    return (s->cpuid_7_0_edx_features & CPUID_7_0_EDX_AMX_TILE) &&
+           (s->flags & HF_AMX_EN_MASK);
+}
+
+static bool x86_amx_extended_feature(const CPUX86State *env,
+                                     uint32_t feature)
+{
+    return (env->features[FEAT_1E_1_EAX] & feature) != 0;
+}
+
+static bool x86_vex_amx_owner_enabled(const CPUX86State *env,
+                                      const DisasContext *s, int opcode,
+                                      int mandatory)
+{
+    if (!x86_amx_enabled(s)) {
+        return false;
+    }
+
+    switch (opcode) {
+    case 0x49:
+    case 0x4b:
+        return true;
+    case 0x4a:
+        return x86_amx_extended_feature(
+            env, CPUID_1E_1_EAX_AMX_MOVRS);
+    case 0x5c:
+        if (mandatory == PREFIX_REPZ) {
+            return (s->cpuid_7_0_edx_features &
+                    CPUID_7_0_EDX_AMX_BF16) != 0;
+        }
+        return mandatory == PREFIX_REPNZ &&
+               (s->cpuid_7_1_eax_features &
+                CPUID_7_1_EAX_AMX_FP16) != 0;
+    case 0x5e:
+        return (s->cpuid_7_0_edx_features &
+                CPUID_7_0_EDX_AMX_INT8) != 0;
+    case 0x6c:
+        return (s->cpuid_7_1_edx_features &
+                CPUID_7_1_EDX_AMX_COMPLEX) != 0;
+    case 0xfd:
+        return x86_amx_extended_feature(env,
+                                        CPUID_1E_1_EAX_AMX_FP8);
+    default:
+        return false;
+    }
+}
+
 static int amx_default_segment(AddressParts address)
 {
     if (address.base >= 0 &&
-        ((address.base & 7) == R_ESP || (address.base & 7) == R_EBP)) {
+        (address.base == R_ESP || address.base == R_EBP)) {
         return R_SS;
     }
     return address.def_seg;
@@ -8897,8 +9073,12 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
         return AMX_VEX_NOT_HANDLED;
     }
     opcode = translator_ldub(env->uc->tcg_ctx, env, s->pc);
-    if (b == 0x138 && opcode != 0x48 && opcode != 0x49 &&
-        opcode != 0x4a &&
+    /* Keep ownership of the retired map-2 opcode 48 byte sequence so it
+     * cannot alias another VEX decoder, but always reject it. */
+    if (b == 0x138 && opcode == 0x48) {
+        return AMX_VEX_INVALID;
+    }
+    if (b == 0x138 && opcode != 0x49 && opcode != 0x4a &&
         opcode != 0x4b && opcode != 0x5c && opcode != 0x5e &&
         opcode != 0x6c) {
         return AMX_VEX_NOT_HANDLED;
@@ -8908,10 +9088,13 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
     }
 
     (void)x86_ldub_code(env, s);
-    if (!CODE64(s) || s->vex_l != 0 || s->vex_w || rex_r) {
+    if (!CODE64(s) || s->vex_l != 0 || s->vex_w) {
         return AMX_VEX_INVALID;
     }
     modrm = x86_ldub_code(env, s);
+    if (!x86_vex_amx_owner_enabled(env, s, opcode, mandatory)) {
+        return AMX_VEX_INVALID;
+    }
 
     if (opcode == 0x49) {
         if (s->vex_v != 0) {
@@ -8919,9 +9102,6 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
         }
         if (mandatory == 0) {
             if (modrm == 0xc0) {
-                if (REX_X(s) || REX_B(s)) {
-                    return AMX_VEX_INVALID;
-                }
                 gen_helper_amx_tilerelease(s->uc->tcg_ctx,
                                            s->uc->tcg_ctx->cpu_env);
                 return AMX_VEX_DECODED;
@@ -8940,8 +9120,7 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
             return AMX_VEX_DECODED;
         }
         if (mandatory == PREFIX_REPNZ) {
-            if ((modrm >> 6) != 3 || (modrm & 7) != 0 || REX_X(s) ||
-                REX_B(s)) {
+            if ((modrm >> 6) != 3 || (modrm & 7) != 0 || rex_r) {
                 return AMX_VEX_INVALID;
             }
             gen_helper_amx_tilezero(
@@ -8955,7 +9134,7 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
     if (opcode == 0x4a) {
         if (s->vex_v != 0 ||
             (mandatory != PREFIX_REPNZ && mandatory != PREFIX_DATA) ||
-            (modrm >> 6) == 3 || (modrm & 7) != 4) {
+            (modrm >> 6) == 3 || (modrm & 7) != 4 || rex_r) {
             return AMX_VEX_INVALID;
         }
         gen_amx_tile_memory(env, s, modrm, (modrm >> 3) & 7, false);
@@ -8969,18 +9148,12 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
         const unsigned int src2 = s->vex_v;
         uint32_t desc;
 
-        if ((modrm >> 6) != 3 || src2 >= 8 || REX_X(s) || REX_B(s) ||
+        if ((modrm >> 6) != 3 || src2 >= 8 || rex_r || REX_B(s) ||
             dst == src1 || dst == src2 || src1 == src2) {
             return AMX_VEX_INVALID;
         }
 
         switch (opcode) {
-        case 0x48:
-            if (mandatory != PREFIX_DATA) {
-                return AMX_VEX_INVALID;
-            }
-            operation = AMX_COMPUTE_TMMULTF32PS;
-            break;
         case 0x5c:
             if (mandatory == PREFIX_REPZ) {
                 operation = AMX_COMPUTE_TDPBF16PS;
@@ -9053,7 +9226,7 @@ static AMXVexDecodeResult gen_vex_amx(CPUX86State *env, DisasContext *s,
          mandatory != PREFIX_REPZ)) {
         return AMX_VEX_INVALID;
     }
-    if ((modrm >> 6) == 3 || (modrm & 7) != 4) {
+    if ((modrm >> 6) == 3 || (modrm & 7) != 4 || rex_r) {
         return AMX_VEX_INVALID;
     }
     gen_amx_tile_memory(env, s, modrm, (modrm >> 3) & 7,
@@ -9136,6 +9309,19 @@ static bool gen_apx_evex_setcc(CPUX86State *env, DisasContext *s,
 static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
                                 int rex_byte, int p0, int p1, int p2,
                                 int opcode);
+static int apx_evex_reg_field(int p0, int modrm);
+static int apx_evex_rm_field(int p0, int modrm);
+static int evex_vector_rm_field(int p0, int modrm);
+static bool gen_evex_memory_address(CPUX86State *env, DisasContext *s,
+                                    int p0, int p1, int modrm,
+                                    int disp8_scale, int mask_reg,
+                                    int active_elements, int access_bytes,
+                                    bool tuple_access);
+static void gen_evex_extended_memory_address(CPUX86State *env,
+                                             DisasContext *s, int p0,
+                                             int p1, int modrm,
+                                             int disp8_scale,
+                                             int access_bytes);
 #endif
 
 static uint32_t evex_vmovdqu_desc(int reg, int src, int element_shift,
@@ -9611,6 +9797,13 @@ static bool gen_evex_packed_compare_reg(CPUX86State *env, DisasContext *s,
     if (predicate & ~7) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (element_shift < 2 ? CPUID_7_0_EBX_AVX512BW : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
 
     dst = (modrm >> 3) & 7;
     src2 = modrm & 7;
@@ -9684,6 +9877,13 @@ static bool gen_evex_legacy_compare_reg(CPUX86State *env, DisasContext *s,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (element_shift < 2 ? CPUID_7_0_EBX_AVX512BW : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     src1 = (~p1 >> 3) & 15;
     if (!(p2 & 0x08)) {
@@ -9725,6 +9925,8 @@ static bool gen_evex_packed_int_reg(CPUX86State *env, DisasContext *s,
     int vector_length;
     int mask_reg;
     bool zero;
+    uint32_t required_ebx = 0;
+    uint32_t required_ecx = 0;
 
     /* These operations require 66.0F or 66.0F38.  EVEX.b has only
      * memory-broadcast meaning for the forms that define it; this
@@ -10157,6 +10359,54 @@ static bool gen_evex_packed_int_reg(CPUX86State *env, DisasContext *s,
         return false;
     }
 
+    if (float_logic) {
+        required_ebx |= CPUID_7_0_EBX_AVX512DQ;
+    }
+    if (map == 2) {
+        switch (opcode) {
+        case 0x44: /* VPLZCNTD/VPLZCNTQ */
+        case 0xc4: /* VPCONFLICTD/VPCONFLICTQ */
+            required_ebx |= CPUID_7_0_EBX_AVX512CD;
+            break;
+        case 0x54: /* VPOPCNTB/VPOPCNTW */
+            required_ecx |= CPUID_7_0_ECX_AVX512BITALG;
+            break;
+        case 0x55: /* VPOPCNTD/VPOPCNTQ */
+            required_ecx |= CPUID_7_0_ECX_AVX512_VPOPCNTDQ;
+            break;
+        case 0x40: /* VPMULLD/VPMULLQ */
+            if (w) {
+                required_ebx |= CPUID_7_0_EBX_AVX512DQ;
+            }
+            break;
+        case 0x50: /* VPDPBUSD */
+        case 0x51: /* VPDPBUSDS */
+        case 0x52: /* VPDPWSSD */
+        case 0x53: /* VPDPWSSDS */
+            required_ecx |= CPUID_7_0_ECX_AVX512VNNI;
+            break;
+        case 0x83: /* VPMULTISHIFTQB */
+            required_ecx |= CPUID_7_0_ECX_AVX512_VBMI;
+            break;
+        case 0x75: /* VPERMI2B/VPERMI2W */
+        case 0x7d: /* VPERMT2B/VPERMT2W */
+        case 0x8d: /* VPERMB/VPERMW */
+            if (!w) {
+                required_ecx |= CPUID_7_0_ECX_AVX512_VBMI;
+            }
+            break;
+        case 0xb4: /* VPMADD52LUQ */
+        case 0xb5: /* VPMADD52HUQ */
+            required_ebx |= CPUID_7_0_EBX_AVX512IFMA;
+            break;
+        default:
+            break;
+        }
+    }
+    if (element_shift < 2 && !required_ecx) {
+        required_ebx |= CPUID_7_0_EBX_AVX512BW;
+    }
+
     if (unary && ((p1 & 0x78) != 0x78 || !(p2 & 0x08))) {
         return false;
     }
@@ -10168,10 +10418,18 @@ static bool gen_evex_packed_int_reg(CPUX86State *env, DisasContext *s,
         (no_xmm && vector_length == 0)) {
         return false;
     }
+    if (vector_length != 2) {
+        required_ebx |= CPUID_7_0_EBX_AVX512VL;
+    }
 
     modrm = x86_ldub_code(env, s);
     if ((modrm >> 6) != 3) {
         return false;
+    }
+    if ((s->cpuid_7_0_ebx_features & required_ebx) != required_ebx ||
+        (s->cpuid_7_0_ecx_features & required_ecx) != required_ecx) {
+        gen_illegal_opcode(s);
+        return true;
     }
 
     dst = (modrm >> 3) & 7;
@@ -10363,6 +10621,21 @@ static bool gen_evex_packed_shift_reg(CPUX86State *env, DisasContext *s,
                                    : EVEX_DOUBLE_SHIFT_RIGHT;
     }
 
+    if (!x86_evex_require_features(
+            s,
+            ((operation != EVEX_DOUBLE_SHIFT_LEFT &&
+              operation != EVEX_DOUBLE_SHIFT_RIGHT && element_shift < 2)
+                 ? CPUID_7_0_EBX_AVX512BW
+                 : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            (operation == EVEX_DOUBLE_SHIFT_LEFT ||
+             operation == EVEX_DOUBLE_SHIFT_RIGHT)
+                ? CPUID_7_0_ECX_AVX512_VBMI2
+                : 0,
+            0)) {
+        return true;
+    }
+
     if (immediate_group) {
         dst = (~p1 >> 3) & 15;
         if (!(p2 & 0x08)) {
@@ -10427,6 +10700,11 @@ static bool gen_evex_bit_shuffle_reg(CPUX86State *env, DisasContext *s,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s, vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0,
+            CPUID_7_0_ECX_AVX512BITALG, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     src1 = (~p1 >> 3) & 15;
     if (!(p2 & 0x08)) {
@@ -10472,6 +10750,13 @@ static bool gen_evex_mask_test_reg(CPUX86State *env, DisasContext *s,
     if ((modrm >> 6) != 3 || (p2 & 0x10)) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (element_shift < 2 ? CPUID_7_0_EBX_AVX512BW : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     src1 = (~p1 >> 3) & 15;
     if (!(p2 & 0x08)) {
@@ -10514,6 +10799,11 @@ static bool gen_evex_ternlog_reg(CPUX86State *env, DisasContext *s,
     modrm = x86_ldub_code(env, s);
     if ((modrm >> 6) != 3) {
         return false;
+    }
+    if (!x86_evex_require_features(
+            s, vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0,
+            0, 0)) {
+        return true;
     }
     immediate = x86_ldub_code(env, s);
     dst = (modrm >> 3) & 7;
@@ -10567,6 +10857,13 @@ static bool gen_evex_shuffle_imm_reg(CPUX86State *env, DisasContext *s,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (mandatory == 1 ? 0 : CPUID_7_0_EBX_AVX512BW) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
     immediate = x86_ldub_code(env, s);
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
@@ -10606,6 +10903,8 @@ static bool gen_evex_lane_int_reg(CPUX86State *env, DisasContext *s,
     int modrm;
     int dst, src1, src2;
     unsigned int immediate = 0;
+    uint32_t required_ebx =
+        vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0;
     const bool float_unpack =
         map == 1 && (opcode == 0x14 || opcode == 0x15) &&
         ((!w && mandatory == 0) || (w && mandatory == 1));
@@ -10774,9 +11073,24 @@ static bool gen_evex_lane_int_reg(CPUX86State *env, DisasContext *s,
         return false;
     }
 
+    if ((map == 1 &&
+         (opcode == 0x60 || opcode == 0x61 || opcode == 0x63 ||
+          opcode == 0x67 || opcode == 0x68 || opcode == 0x69 ||
+          opcode == 0x6b || opcode == 0xf5 || opcode == 0xf6)) ||
+        map == 2 || (map == 3 && opcode == 0x0f)) {
+        required_ebx |= CPUID_7_0_EBX_AVX512BW;
+    }
+    if (((lane_insert_128 || lane_extract_128) && w) ||
+        ((lane_insert_256 || lane_extract_256) && !w)) {
+        required_ebx |= CPUID_7_0_EBX_AVX512DQ;
+    }
+
     modrm = x86_ldub_code(env, s);
     if ((modrm >> 6) != 3) {
         return false;
+    }
+    if (!x86_evex_require_features(s, required_ebx, 0, 0)) {
+        return true;
     }
     if (operation == EVEX_LANE_ALIGN_RIGHT ||
         operation == EVEX_LANE_SHUFFLE_PS ||
@@ -10844,6 +11158,7 @@ static bool gen_evex_mask_convert_reg(CPUX86State *env, DisasContext *s,
     int element_shift;
     int modrm;
     int dst, src;
+    uint32_t required_ebx;
 
     if ((p0 & 3) != 2 || (p1 & 3) != 2 ||
         (p1 & 0x78) != 0x78 || (p2 & 0x9f) != 0x08 ||
@@ -10889,6 +11204,19 @@ static bool gen_evex_mask_convert_reg(CPUX86State *env, DisasContext *s,
     modrm = x86_ldub_code(env, s);
     if ((modrm >> 6) != 3) {
         return false;
+    }
+    if (opcode == 0x28 || opcode == 0x29) {
+        required_ebx = CPUID_7_0_EBX_AVX512BW;
+    } else if (opcode == 0x38 || opcode == 0x39) {
+        required_ebx = CPUID_7_0_EBX_AVX512DQ;
+    } else {
+        required_ebx = CPUID_7_0_EBX_AVX512CD;
+    }
+    if (vector_length != 2) {
+        required_ebx |= CPUID_7_0_EBX_AVX512VL;
+    }
+    if (!x86_evex_require_features(s, required_ebx, 0, 0)) {
+        return true;
     }
     if (operation == EVEX_MCONV_VECTOR_TO_MASK) {
         if ((p0 & 0x90) != 0x90) {
@@ -10978,6 +11306,15 @@ static bool gen_evex_widen_reg(CPUX86State *env, DisasContext *s, int p0,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (input_shift == 0 && output_shift == 1
+                 ? CPUID_7_0_EBX_AVX512BW
+                 : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         dst |= 8;
@@ -11060,6 +11397,13 @@ static bool gen_evex_narrow_reg(CPUX86State *env, DisasContext *s, int p0,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            (form == 0 ? CPUID_7_0_EBX_AVX512BW : 0) |
+                (vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0),
+            0, 0)) {
+        return true;
+    }
     src = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         src |= 8;
@@ -11130,6 +11474,11 @@ static bool gen_evex_vector_move_reg(CPUX86State *env, DisasContext *s,
     if ((modrm >> 6) != 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s, vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0,
+            0, 0)) {
+        return true;
+    }
     reg = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         reg |= 8;
@@ -11171,6 +11520,8 @@ static bool gen_evex_compress_expand_reg(CPUX86State *env, DisasContext *s,
     int modrm;
     int reg, rm;
     int dst, src;
+    uint32_t required_ebx = 0;
+    uint32_t required_ecx = 0;
 
     if ((p0 & 3) != 2 || (p1 & 3) != 1) {
         return false;
@@ -11180,10 +11531,12 @@ static bool gen_evex_compress_expand_reg(CPUX86State *env, DisasContext *s,
     case 0x62: /* VPEXPANDB/VPEXPANDW */
         element_shift = w ? 1 : 0;
         expand = true;
+        required_ecx = CPUID_7_0_ECX_AVX512_VBMI2;
         break;
     case 0x63: /* VPCOMPRESSB/VPCOMPRESSW */
         element_shift = w ? 1 : 0;
         expand = false;
+        required_ecx = CPUID_7_0_ECX_AVX512_VBMI2;
         break;
     case 0x88: /* VEXPANDPS/VEXPANDPD */
     case 0x89: /* VPEXPANDD/VPEXPANDQ */
@@ -11206,12 +11559,20 @@ static bool gen_evex_compress_expand_reg(CPUX86State *env, DisasContext *s,
         vector_length == 3 || (zero && !mask_reg)) {
         return false;
     }
+    if (vector_length != 2) {
+        required_ebx = CPUID_7_0_EBX_AVX512VL;
+    }
     modrm = x86_ldub_code(env, s);
     /* Memory forms use Tuple1-scalar displacement scaling and dynamic fault
      * suppression.  Keep them #UD until a dedicated memory helper provides
      * both contracts. */
     if ((modrm >> 6) != 3) {
         return false;
+    }
+    if ((s->cpuid_7_0_ebx_features & required_ebx) != required_ebx ||
+        (s->cpuid_7_0_ecx_features & required_ecx) != required_ecx) {
+        gen_illegal_opcode(s);
+        return true;
     }
 
     reg = (modrm >> 3) & 7;
@@ -11307,6 +11668,11 @@ static bool gen_evex_fp_arith(CPUX86State *env, DisasContext *s, int p0,
     } else if (vector_length == 3) {
         return false;
     }
+    if (!scalar && vector_length != 2 &&
+        !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512VL)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
 
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
@@ -11331,11 +11697,16 @@ static bool gen_evex_fp_arith(CPUX86State *env, DisasContext *s, int p0,
         if (scalar && evex_b) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         desc = evex_fp_arith_desc(
             dst, src1, 0, vector_length, mask_reg, operation, is_double,
             scalar, zero, false, 0, evex_b && !scalar);
@@ -11422,6 +11793,10 @@ static bool gen_evex_fma(CPUX86State *env, DisasContext *s, int p0, int p1,
     } else if (vector_length == 3) {
         return false;
     }
+    if (!scalar && vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return true;
+    }
 
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
@@ -11441,11 +11816,16 @@ static bool gen_evex_fma(CPUX86State *env, DisasContext *s, int p0, int p1,
         if (scalar && evex_b) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         desc = evex_fma_desc(dst, src1, 0, vector_length, mask_reg,
                              permutation, variant, is_double, scalar, zero,
                              false, 0, evex_b && !scalar);
@@ -11521,6 +11901,10 @@ static bool gen_evex_convert(CPUX86State *env, DisasContext *s, int p0,
         if (evex_b || vector_length == 3) {
             return false;
         }
+        if (vector_length != 2 &&
+            !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+            return true;
+        }
         modrm = x86_ldub_code(env, s);
         src = (modrm >> 3) & 7;
         if (!(p0 & 0x80)) {
@@ -11537,9 +11921,11 @@ static bool gen_evex_convert(CPUX86State *env, DisasContext *s, int p0,
                 return false;
             }
             s->rip_offset = 1;
-            s->rex_x = (~p0 >> 3) & 8;
-            s->rex_b = (~p0 >> 2) & 8;
-            gen_lea_modrm_evex(env, s, modrm, destination_bytes);
+            if (!gen_evex_memory_address(
+                    env, s, p0, p1, modrm, destination_bytes, mask_reg,
+                    destination_bytes / 2, 2, false)) {
+                return true;
+            }
             immediate = x86_ldub_code(env, s);
             desc = evex_convert_desc(
                 0, src, vector_length, mask_reg, EVEX_CVT_F32, EVEX_CVT_F16,
@@ -11684,6 +12070,18 @@ static bool gen_evex_convert(CPUX86State *env, DisasContext *s, int p0,
     } else if (vector_length == 3) {
         return false;
     }
+    {
+        uint32_t required_ebx =
+            vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0;
+
+        if (src_type == EVEX_CVT_I64 || src_type == EVEX_CVT_U64 ||
+            dst_type == EVEX_CVT_I64 || dst_type == EVEX_CVT_U64) {
+            required_ebx |= CPUID_7_0_EBX_AVX512DQ;
+        }
+        if (!x86_evex_require_features(s, required_ebx, 0, 0)) {
+            return true;
+        }
+    }
 
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
@@ -11703,9 +12101,12 @@ static bool gen_evex_convert(CPUX86State *env, DisasContext *s, int p0,
             dst, 0, vector_length, mask_reg, src_type, dst_type, zero,
             truncate, false, false, 0, evex_b);
 
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm, evex_b ? src_bytes : memory_bytes);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                evex_b ? src_bytes : memory_bytes, mask_reg, elements,
+                src_bytes, evex_b)) {
+            return true;
+        }
         gen_helper_evex_convert_load(tcg_ctx, tcg_ctx->cpu_env, s->A0,
                                      tcg_const_i32(tcg_ctx, desc));
         return true;
@@ -11799,12 +12200,11 @@ static bool gen_evex_scalar_convert(CPUX86State *env, DisasContext *s,
         return false;
     }
 
-    dst = (modrm >> 3) & 7;
-    if (!(p0 & 0x80)) {
-        dst |= 8;
-    }
-    if (!(p0 & 0x10)) {
-        dst |= 16;
+    dst = apx_evex_reg_field(p0, modrm);
+    if (gpr_destination && dst >= 16 &&
+        (!CODE64(s) || !apx_f_enabled(s))) {
+        gen_illegal_opcode(s);
+        return true;
     }
     if (!gpr_destination) {
         src1 = (~p1 >> 3) & 15;
@@ -11818,21 +12218,25 @@ static bool gen_evex_scalar_convert(CPUX86State *env, DisasContext *s,
             dst, src1, 0, mask_reg, src_type, dst_type, zero, truncate,
             false, false, 0, false, gpr_destination);
 
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           evex_convert_type_bytes(src_type));
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                evex_convert_type_bytes(src_type), mask_reg, 1,
+                evex_convert_type_bytes(src_type), false)) {
+            return true;
+        }
         gen_helper_evex_scalar_convert_load(tcg_ctx, tcg_ctx->cpu_env, s->A0,
                                             tcg_const_i32(tcg_ctx, desc));
         return true;
     }
 
-    src2 = modrm & 7;
-    if (!(p0 & 0x20)) {
-        src2 |= 8;
-    }
-    if (!(p0 & 0x40)) {
-        src2 |= 16;
+    if (gpr_source) {
+        src2 = apx_evex_rm_field(p0, modrm);
+        if (src2 >= 16 && (!CODE64(s) || !apx_f_enabled(s))) {
+            gen_illegal_opcode(s);
+            return true;
+        }
+    } else {
+        src2 = evex_vector_rm_field(p0, modrm);
     }
     gen_helper_evex_scalar_convert_reg(
         tcg_ctx, tcg_ctx->cpu_env,
@@ -11877,6 +12281,10 @@ static bool gen_evex_approx14_reg(CPUX86State *env, DisasContext *s,
     }
 
     modrm = x86_ldub_code(env, s);
+    if (!scalar && vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         dst |= 8;
@@ -11899,11 +12307,16 @@ static bool gen_evex_approx14_reg(CPUX86State *env, DisasContext *s,
         if (scalar && evex_b) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         desc = evex_approx14_desc(dst, src1, 0, vector_length, mask_reg,
                                  is_double, rsqrt, scalar, zero,
                                  evex_b && !scalar);
@@ -11962,6 +12375,15 @@ static bool gen_evex_range(CPUX86State *env, DisasContext *s, int p0, int p1,
     } else if (vector_length == 3) {
         return false;
     }
+    if (!x86_evex_require_features(
+            s,
+            CPUID_7_0_EBX_AVX512DQ |
+                (!scalar && vector_length != 2
+                     ? CPUID_7_0_EBX_AVX512VL
+                     : 0),
+            0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         dst |= 8;
@@ -11983,11 +12405,16 @@ static bool gen_evex_range(CPUX86State *env, DisasContext *s, int p0, int p1,
         /* The immediate follows the complete ModRM/SIB/displacement field,
          * so include it when resolving RIP-relative addressing. */
         s->rip_offset = 1;
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         immediate = x86_ldub_code(env, s);
         if (immediate & 0xf0) {
             return false;
@@ -12067,23 +12494,6 @@ static bool gen_evex_fp_transform(CPUX86State *env, DisasContext *s, int p0,
     if ((p0 & 3) != 3 || (p1 & 3) != 1 || (zero && !mask_reg)) {
         return false;
     }
-    {
-        const uint32_t required_feature =
-            kind == EVEX_FP_TRANSFORM_REDUCE
-                ? CPUID_7_0_EBX_AVX512DQ
-                : CPUID_7_0_EBX_AVX512F;
-        const uint64_t required_xstate =
-            XSTATE_SSE_MASK | XSTATE_YMM_MASK | XSTATE_OPMASK_MASK |
-            XSTATE_ZMM_Hi256_MASK | XSTATE_Hi16_ZMM_MASK;
-
-        if (!(s->cpuid_ext_features & CPUID_EXT_AVX) ||
-            !(s->flags & HF_AVX_EN_MASK) ||
-            (s->cpuid_7_0_ebx_features & required_feature) !=
-                required_feature ||
-            (env->xcr0 & required_xstate) != required_xstate) {
-            return false;
-        }
-    }
     if (kind != EVEX_FP_TRANSFORM_FIXUP && !scalar &&
         ((p1 & 0x78) != 0x78 || !(p2 & 0x08))) {
         return false;
@@ -12099,9 +12509,16 @@ static bool gen_evex_fp_transform(CPUX86State *env, DisasContext *s, int p0,
     } else if (vector_length == 3) {
         return false;
     }
-    if (!scalar && vector_length != 2 &&
-        !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512VL)) {
-        return false;
+    if (!x86_evex_require_features(
+            s,
+            (kind == EVEX_FP_TRANSFORM_REDUCE
+                 ? CPUID_7_0_EBX_AVX512DQ
+                 : 0) |
+                (!scalar && vector_length != 2
+                     ? CPUID_7_0_EBX_AVX512VL
+                     : 0),
+            0, 0)) {
+        return true;
     }
 
     dst = (modrm >> 3) & 7;
@@ -12126,11 +12543,16 @@ static bool gen_evex_fp_transform(CPUX86State *env, DisasContext *s, int p0,
             return false; /* EVEX.b is reserved for scalar memory forms. */
         }
         s->rip_offset = 1;
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         immediate = x86_ldub_code(env, s);
         desc = evex_fp_transform_desc(
             dst, src1, 0, vector_length, mask_reg, kind, is_double, scalar,
@@ -12197,6 +12619,10 @@ static bool gen_evex_get_fp(CPUX86State *env, DisasContext *s, int p0, int p1,
     } else if (vector_length == 3) {
         return false;
     }
+    if (!scalar && vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return true;
+    }
 
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
@@ -12223,11 +12649,16 @@ static bool gen_evex_get_fp(CPUX86State *env, DisasContext *s, int p0, int p1,
             /* Account for the trailing immediate in RIP-relative addresses. */
             s->rip_offset = 1;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b && !scalar)) {
+            return true;
+        }
         if (mantissa) {
             immediate = x86_ldub_code(env, s);
         }
@@ -12288,6 +12719,10 @@ static bool gen_evex_scalef(CPUX86State *env, DisasContext *s, int p0, int p1,
     } else if (vector_length == 3) {
         return false;
     }
+    if (!scalar && vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return true;
+    }
     dst = (modrm >> 3) & 7;
     if (!(p0 & 0x80)) {
         dst |= 8;
@@ -12306,11 +12741,16 @@ static bool gen_evex_scalef(CPUX86State *env, DisasContext *s, int p0, int p1,
         if (scalar && evex_b) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm,
-                           scalar || evex_b ? (is_double ? 8 : 4)
-                                            : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4)
+                                 : 16 << vector_length,
+                mask_reg,
+                scalar ? 1
+                       : (16 << vector_length) / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         desc = evex_scalef_desc(dst, src1, 0, vector_length, mask_reg,
                                 rounding_mode, is_double, scalar, zero, false,
                                 evex_b && !scalar);
@@ -12384,6 +12824,11 @@ static bool gen_evex_approx28_reg(CPUX86State *env, DisasContext *s,
         return false;
     }
 
+    if (!(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512ER)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
+
     if (scalar) {
         /* EVEX.L'L is ignored for scalar forms. */
         src1 = (~p1 >> 3) & 15;
@@ -12416,11 +12861,13 @@ static bool gen_evex_approx28_reg(CPUX86State *env, DisasContext *s,
         if (scalar && evex_b) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(
-            env, s, modrm,
-            scalar || evex_b ? (is_double ? 8 : 4) : 64);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || evex_b ? (is_double ? 8 : 4) : 64, mask_reg,
+                scalar ? 1 : 64 / (is_double ? 8 : 4),
+                is_double ? 8 : 4, evex_b)) {
+            return true;
+        }
         desc = evex_approx28_desc(dst, src1, 0, mask_reg, is_double,
                                  rsqrt, exp2, scalar, zero, false, evex_b);
         gen_helper_evex_approx28_load(
@@ -12456,6 +12903,58 @@ static AddressParts decode_rex2_memory_address_scaled(
     CPUX86State *env, DisasContext *s, int modrm, int rex2,
     int disp8_scale);
 static void gen_rex2_memory_address(DisasContext *s, AddressParts address);
+static void gen_rex2_load_gpr(DisasContext *s, TCGv_i64 value, int reg,
+                              int width);
+
+static void gen_evex_amx_tile_memory(CPUX86State *env, DisasContext *s,
+                                     int p0, int p1, int modrm,
+                                     unsigned int tile, bool store)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
+                     (!(p0 & 0x40) ? 0x02 : 0) |
+                     ((p0 & 0x08) ? 0x10 : 0) |
+                     (!(p1 & 0x04) ? 0x20 : 0);
+    const AddressParts address =
+        decode_rex2_memory_address_scaled(env, s, modrm, rex2, 1);
+    TCGv_i64 value = tcg_temp_new_i64(tcg_ctx);
+    uint32_t desc;
+
+    /* AMX tile memory operands use the SIB base as the row-zero address and
+     * the SIB index as the row stride.  Do not feed the index through the
+     * ordinary effective-address adder: doing so would count it once before
+     * the helper and again for every row. */
+    tcg_gen_movi_i64(tcg_ctx, s->A0, address.disp);
+    if (address.base >= 0) {
+        gen_rex2_load_gpr(s, value, address.base, 8);
+        tcg_gen_add_i64(tcg_ctx, s->A0, s->A0, value);
+    }
+    if (s->aflag == MO_32) {
+        tcg_gen_ext32u_i64(tcg_ctx, s->A0, s->A0);
+    }
+
+    if (address.index < 0) {
+        tcg_gen_movi_i64(tcg_ctx, s->T0, 0);
+    } else {
+        gen_rex2_load_gpr(s, s->T0, address.index, 8);
+        if (s->aflag == MO_32) {
+            tcg_gen_ext32u_i64(tcg_ctx, s->T0, s->T0);
+        }
+        if (address.scale) {
+            tcg_gen_shli_i64(tcg_ctx, s->T0, s->T0, address.scale);
+            if (s->aflag == MO_32) {
+                tcg_gen_ext32u_i64(tcg_ctx, s->T0, s->T0);
+            }
+        }
+    }
+
+    desc = amx_memory_desc(s, address, tile, store);
+    gen_helper_amx_tileloadstore(tcg_ctx, tcg_ctx->cpu_env, s->A0, s->T0,
+                                 tcg_const_i32(tcg_ctx, desc),
+                                 tcg_const_tl(tcg_ctx,
+                                              s->pc_start - s->cs_base));
+    tcg_temp_free_i64(tcg_ctx, value);
+}
 
 static EVEXAMXRowDecodeResult gen_evex_amx_config(
     CPUX86State *env, DisasContext *s, int p0, int p1, int p2, int opcode)
@@ -12474,7 +12973,7 @@ static EVEXAMXRowDecodeResult gen_evex_amx_config(
     /* EVEX-promoted TILECFG access keeps R/R' ignored for ModRM /0, while
      * B4 and X4 extend the address base/index into the APX register bank. */
     if ((p1 & 0xf8) != 0x78 || p2 != 0x08 || mandatory > 1 ||
-        (((p0 & 0x08) || !(p1 & 0x04)) && !apx_f_enabled(s))) {
+        !x86_amx_enabled(s) || !apx_f_enabled(s)) {
         return EVEX_AMX_ROW_INVALID;
     }
 
@@ -12498,6 +12997,43 @@ static EVEXAMXRowDecodeResult gen_evex_amx_config(
         gen_helper_amx_ldtilecfg(tcg_ctx, tcg_ctx->cpu_env, s->A0,
                                  tcg_const_i32(tcg_ctx, desc));
     }
+    return EVEX_AMX_ROW_DECODED;
+}
+
+static EVEXAMXRowDecodeResult gen_evex_amx_tile_memory_decode(
+    CPUX86State *env, DisasContext *s, int p0, int p1, int p2, int opcode)
+{
+    const unsigned int mandatory = p1 & 3;
+    bool store;
+    int modrm;
+
+    if ((p0 & 7) != 2 || (opcode != 0x4a && opcode != 0x4b)) {
+        return EVEX_AMX_ROW_NOT_HANDLED;
+    }
+    /* Map-2 opcode 4A also owns the LL=2 AMX-AVX512 row forms. */
+    if (opcode == 0x4a && (p2 & 0x7f) != 0x08) {
+        return EVEX_AMX_ROW_NOT_HANDLED;
+    }
+    if ((p1 & 0xf8) != 0x78 ||
+        (opcode == 0x4a ? (p2 & 0x7f) != 0x08 : p2 != 0x08) ||
+        (opcode == 0x4a
+             ? (mandatory != 1 && mandatory != 3)
+             : (mandatory != 1 && mandatory != 2 && mandatory != 3)) ||
+        !x86_amx_enabled(s) || !apx_f_enabled(s) ||
+        (opcode == 0x4a &&
+         !x86_amx_extended_feature(
+             env, CPUID_1E_1_EAX_AMX_MOVRS))) {
+        return EVEX_AMX_ROW_INVALID;
+    }
+
+    modrm = x86_ldub_code(env, s);
+    /* The SIB index is the architectural stride operand. */
+    if ((p0 & 0x90) != 0x90 || (modrm >> 6) == 3 || (modrm & 7) != 4) {
+        return EVEX_AMX_ROW_INVALID;
+    }
+    store = opcode == 0x4b && mandatory == 2;
+    gen_evex_amx_tile_memory(env, s, p0, p1, modrm,
+                             (modrm >> 3) & 7, store);
     return EVEX_AMX_ROW_DECODED;
 }
 
@@ -12605,6 +13141,20 @@ static EVEXAMXRowDecodeResult gen_evex_amx_tile_row(
         }
     }
 
+    if (!x86_amx_enabled(s) ||
+        !x86_amx_extended_feature(
+            env, CPUID_1E_1_EAX_AMX_AVX512) ||
+        !x86_avx512_enabled(s) ||
+        (!immediate && selector >= 16 && !apx_f_enabled(s))) {
+        return EVEX_AMX_ROW_INVALID;
+    }
+    /* AMX-AVX512 row operations use SIMD state and therefore retain the
+     * architectural TS -> #NM behavior, but AMX does not consult CR0.EM. */
+    if (s->flags & HF_TS_MASK) {
+        gen_exception(s, EXCP07_PREX, s->pc_start - s->cs_base);
+        return EVEX_AMX_ROW_DECODED;
+    }
+
     desc = (dst << AMX_ROW_DST_SHIFT) | (src << AMX_ROW_SRC_SHIFT) |
            ((uint32_t)operation << AMX_ROW_OP_SHIFT) |
            (immediate ? AMX_ROW_IMMEDIATE : 0) |
@@ -12691,6 +13241,13 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
     }
 #endif
 
+    /* EVEX map 5 opcode 6F is VMOVRS and additionally requires AVX10.
+     * AVX10 state is not modeled, so fail closed instead of aliasing the
+     * map-1 VMOVDQU decoder below. */
+    if ((p0 & 7) == 5 && opcode == 0x6f) {
+        return false;
+    }
+
 #ifdef TARGET_X86_64
     if (CODE64(s) && !rex_byte &&
         !(s->prefix &
@@ -12701,6 +13258,66 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
 
         if (apx_bmi != APX_EVEX_NOT_HANDLED) {
             return apx_bmi == APX_EVEX_DECODED;
+        }
+    }
+
+#endif
+
+    if (CODE64(s) && !rex_byte &&
+        !(s->prefix &
+          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ))) {
+        EVEXAMXRowDecodeResult amx;
+
+        s->pc = operand_pc;
+        amx = gen_evex_amx_config(env, s, p0, p1, p2, opcode);
+        if (amx != EVEX_AMX_ROW_NOT_HANDLED) {
+            return amx == EVEX_AMX_ROW_DECODED;
+        }
+
+        s->pc = operand_pc;
+        amx = gen_evex_amx_tile_memory_decode(env, s, p0, p1, p2,
+                                              opcode);
+        if (amx != EVEX_AMX_ROW_NOT_HANDLED) {
+            return amx == EVEX_AMX_ROW_DECODED;
+        }
+
+        s->pc = operand_pc;
+        amx = gen_evex_amx_tile_row(env, s, p0, p1, p2, opcode);
+        if (amx != EVEX_AMX_ROW_NOT_HANDLED) {
+            return amx == EVEX_AMX_ROW_DECODED;
+        }
+    }
+
+    /* APX scalar owners above do not use the SIMD state.  All remaining
+     * EVEX owners do, and therefore preserve the architectural CR0 fault
+     * ordering used by the legacy SSE/VEX decoder. */
+    if (s->flags & HF_TS_MASK) {
+        gen_exception(s, EXCP07_PREX, s->pc_start - s->cs_base);
+        return true;
+    }
+    if (s->flags & HF_EM_MASK) {
+        gen_illegal_opcode(s);
+        return true;
+    }
+
+    /* APX and AMX have already had the opportunity to claim their EVEX
+     * maps.  Every remaining EVEX family requires AVX-512F plus the complete
+     * architectural opmask/ZMM state cached in the translation flags. */
+    if (!x86_avx512_enabled(s)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
+
+#ifdef TARGET_X86_64
+    if (CODE64(s) && !rex_byte &&
+        !(s->prefix &
+          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ)) &&
+        apx_f_enabled(s)) {
+        const APXEVEXDecodeResult apx_kmov =
+            gen_apx_evex_kmov(env, s, p0, p1, p2, opcode);
+
+        if (apx_kmov != APX_EVEX_NOT_HANDLED) {
+            return apx_kmov == APX_EVEX_DECODED;
         }
     }
 
@@ -12748,45 +13365,27 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
         if (non_temporal_move != APX_EVEX_NOT_HANDLED) {
             return non_temporal_move == APX_EVEX_DECODED;
         }
-    }
 
-    if (CODE64(s) && !rex_byte &&
-        !(s->prefix &
-          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ)) &&
-        apx_f_enabled(s)) {
-        const APXEVEXDecodeResult apx_kmov =
-            gen_apx_evex_kmov(env, s, p0, p1, p2, opcode);
-
-        if (apx_kmov != APX_EVEX_NOT_HANDLED) {
-            return apx_kmov == APX_EVEX_DECODED;
+        /* Scalar conversions can use APX B4/X4 for an EGPR source or an
+         * extended memory address.  Give those encodings an owner before
+         * the legacy EVEX fixed-bit check rejects the promoted fields. */
+        if (apx_f_enabled(s) && ((p0 & 0x08) || !(p1 & 0x04))) {
+            s->pc = operand_pc;
+            if (gen_evex_scalar_convert(env, s, p0, p1, p2, opcode)) {
+                return true;
+            }
         }
     }
 #endif
 
-    if (CODE64(s) && !rex_byte &&
-        !(s->prefix &
-          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ))) {
-        EVEXAMXRowDecodeResult amx;
-
-        s->pc = operand_pc;
-        amx = gen_evex_amx_config(env, s, p0, p1, p2, opcode);
-        if (amx != EVEX_AMX_ROW_NOT_HANDLED) {
-            return amx == EVEX_AMX_ROW_DECODED;
-        }
-
-        s->pc = operand_pc;
-        amx = gen_evex_amx_tile_row(env, s, p0, p1, p2, opcode);
-        if (amx != EVEX_AMX_ROW_NOT_HANDLED) {
-            return amx == EVEX_AMX_ROW_DECODED;
-        }
-    }
-
     /* EVEX cannot be combined with REX, LOCK, operand-size or REP prefixes.
-     * P0[3:2] and P1[2] are fixed.  Each strict slice checks its opcode map. */
+     * P0[2] remains fixed.  APX promotes P0.B4 and P1.X4 only when an
+     * existing EVEX form actually consumes the corresponding GPR address or
+     * scalar field; otherwise those bits are architecturally ignored. */
     if (rex_byte ||
         (s->prefix &
          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ)) ||
-        (p0 & 0x0c) != 0 || !(p1 & 0x04)) {
+        (p0 & 0x04) != 0) {
         return false;
     }
 
@@ -12981,6 +13580,11 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
         return false;
     }
     vector_length = (p2 >> 5) & 3;
+    if (vector_length != 2 &&
+        !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512VL)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
     mask_reg = p2 & 7;
     zero = (p2 & 0x80) != 0;
     if (zero && !mask_reg) {
@@ -12992,6 +13596,11 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
         element_shift = (p1 & 0x80) ? 1 : 0;
     } else {
         element_shift = (p1 & 0x80) ? 3 : 2;
+    }
+    if (element_shift < 2 &&
+        !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512BW)) {
+        gen_illegal_opcode(s);
+        return true;
     }
 
     modrm = x86_ldub_code(env, s);
@@ -13009,9 +13618,12 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
         if (opcode == 0x7f && zero) {
             return false;
         }
-        s->rex_x = (~p0 >> 3) & 8;
-        s->rex_b = (~p0 >> 2) & 8;
-        gen_lea_modrm_evex(env, s, modrm, 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm, 16 << vector_length, mask_reg,
+                (16 << vector_length) >> element_shift,
+                1 << element_shift, false)) {
+            return true;
+        }
         desc = evex_vmovdqu_desc(reg, 0, element_shift, vector_length, mask_reg,
                                  zero);
         if (opcode == 0x6f) {
@@ -13176,13 +13788,9 @@ static AddressParts decode_rex2_memory_address_scaled(
 static void gen_rex2_memory_address(DisasContext *s, AddressParts address);
 static void gen_rex2_load_memory(DisasContext *s, TCGv_i64 value, int width);
 static void gen_rex2_store_memory(DisasContext *s, TCGv_i64 value, int width);
-static int apx_evex_reg_field(int p0, int modrm);
-static int apx_evex_rm_field(int p0, int modrm);
+static void gen_rex2_memory_range_check(DisasContext *s,
+                                        bool stack_segment, int width);
 static int apx_evex_v_field(int p1, int p2);
-static void gen_evex_extended_memory_address(CPUX86State *env,
-                                             DisasContext *s, int p0,
-                                             int p1, int modrm,
-                                             int disp8_scale);
 
 static bool gen_apx_evex_setcc(CPUX86State *env, DisasContext *s,
                                int rex_byte, int p0, int p1, int p2,
@@ -13238,13 +13846,9 @@ static bool gen_apx_evex_setcc(CPUX86State *env, DisasContext *s,
 }
 
 static void gen_apx_evex_cmov_memory_check(DisasContext *s,
-                                           bool stack_segment)
+                                           bool stack_segment, int width)
 {
-    TCGContext *tcg_ctx = s->uc->tcg_ctx;
-
-    gen_helper_apx_memory_check(
-        tcg_ctx, tcg_ctx->cpu_env, s->A0,
-        tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
+    gen_rex2_memory_range_check(s, stack_segment, width);
 }
 
 static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
@@ -13352,7 +13956,7 @@ static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
 
             /* The ordinary NDD CMOV form always fetches r/m, even when the
              * condition is false, and therefore never suppresses faults. */
-            gen_apx_evex_cmov_memory_check(s, stack_segment);
+            gen_apx_evex_cmov_memory_check(s, stack_segment, width);
             gen_rex2_load_memory(s, memory_value, width);
             gen_setcc1(s, opcode & 15, condition);
             tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, memory_value,
@@ -13373,7 +13977,7 @@ static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
             tcg_gen_br(tcg_ctx, done);
             gen_set_label(tcg_ctx, taken);
             tcg_gen_mov_i64(tcg_ctx, s->A0, address_value);
-            gen_apx_evex_cmov_memory_check(s, stack_segment);
+            gen_apx_evex_cmov_memory_check(s, stack_segment, width);
             gen_rex2_store_memory(s, reg_value, width);
             gen_set_label(tcg_ctx, done);
         } else {
@@ -13391,7 +13995,7 @@ static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
             tcg_gen_br(tcg_ctx, done);
             gen_set_label(tcg_ctx, taken);
             tcg_gen_mov_i64(tcg_ctx, s->A0, address_value);
-            gen_apx_evex_cmov_memory_check(s, stack_segment);
+            gen_apx_evex_cmov_memory_check(s, stack_segment, width);
             gen_rex2_load_memory(s, result, width);
             gen_set_label(tcg_ctx, done);
             gen_rex2_store_gpr(s, destination, result, 8);
@@ -13497,7 +14101,7 @@ static AddressParts decode_rex2_memory_address(CPUX86State *env,
         tcg_abort();
     }
 
-    if (base >= 0 && ((base & 7) == 4 || (base & 7) == 5)) {
+    if (base == R_ESP || base == R_EBP) {
         def_seg = R_SS;
     }
     return (AddressParts){def_seg, base, index, scale, disp};
@@ -13591,6 +14195,20 @@ static void gen_rex2_store_memory(DisasContext *s, TCGv_i64 value, int width)
                         rex2_width_memop(width) | MO_LE);
 }
 
+static void gen_rex2_memory_range_check(DisasContext *s,
+                                        bool stack_segment, int width)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+
+    gen_helper_apx_evex_memory_check(
+        tcg_ctx, tcg_ctx->cpu_env, s->A0,
+        tcg_const_i32(tcg_ctx, 0), tcg_const_i32(tcg_ctx, 1),
+        tcg_const_i32(tcg_ctx, width),
+        tcg_const_i32(tcg_ctx,
+                      (stack_segment ? APX_MEMORY_SS : 0) |
+                          APX_MEMORY_TUPLE));
+}
+
 static void gen_apx_bswap(DisasContext *s, TCGv_i64 value, int width)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
@@ -13619,12 +14237,13 @@ static APXEVEXDecodeResult gen_apx_evex_atomic(
     const bool rao = map == 4 && opcode == 0xfc;
     const bool cmpccxadd = map == 2 && opcode >= 0xe0 && opcode <= 0xef;
     const bool qword = (p1 & 0x80) != 0;
+    const int width = qword ? 8 : 4;
     int modrm, mod;
 
     if (!rao && !cmpccxadd) {
         return APX_EVEX_NOT_HANDLED;
     }
-    if (!apx_f_enabled(s) || rex_byte ||
+    if (!CODE64(s) || !apx_f_enabled(s) || rex_byte ||
         (s->prefix & (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ |
                       PREFIX_REPNZ))) {
         return APX_EVEX_INVALID;
@@ -13645,11 +14264,10 @@ static APXEVEXDecodeResult gen_apx_evex_atomic(
     if (mod == 3) {
         return APX_EVEX_INVALID;
     }
-    gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1);
+    gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1, width);
 
     if (rao) {
         const int source = apx_evex_reg_field(p0, modrm);
-        const int width = qword ? 8 : 4;
         const int operation = p1 & 3;
         const MemOp memop = rex2_width_memop(width) | MO_LE | MO_ALIGN;
         TCGv_i64 value = tcg_temp_new_i64(tcg_ctx);
@@ -13745,7 +14363,8 @@ static APXEVEXDecodeResult gen_apx_evex_direct_move(
             return APX_EVEX_INVALID;
         }
         reg = apx_evex_reg_field(p0, modrm);
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1);
+        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1,
+                                         width);
         value = tcg_temp_new_i64(tcg_ctx);
         gen_rex2_load_memory(s, value, width);
         /* MOVRS changes speculation behavior, not the architectural value or
@@ -13784,7 +14403,8 @@ static APXEVEXDecodeResult gen_apx_evex_direct_move(
             gen_apx_bswap(s, value, width);
             gen_rex2_store_gpr(s, destination, value, width);
         } else {
-            gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1);
+            gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1,
+                                             width);
             if (opcode == 0x60) {
                 gen_rex2_load_memory(s, value, width);
                 gen_apx_bswap(s, value, width);
@@ -13815,7 +14435,8 @@ static APXEVEXDecodeResult gen_apx_evex_direct_move(
         return APX_EVEX_INVALID;
     }
     reg = apx_evex_reg_field(p0, modrm);
-    gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1);
+    gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1,
+                                     opcode == 0xf9 ? (w ? 8 : 4) : 64);
 
     if (opcode == 0xf9) {
         TCGv_i64 value;
@@ -13960,7 +14581,8 @@ static APXEVEXDecodeResult gen_apx_evex_conditional(
                                  : 1;
         }
         s->rip_offset = immediate_size;
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1);
+        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 1,
+                                         width);
         gen_rex2_load_memory(s, left, width);
     }
 
@@ -14262,6 +14884,9 @@ static APXEVEXDecodeResult gen_apx_evex_kmov(
                  : width == 2 ? UINT16_MAX
                  : width == 4 ? UINT32_MAX
                               : UINT64_MAX;
+    if (!x86_opmask_width_feature_enabled(s, width_mask, false)) {
+        return APX_EVEX_INVALID;
+    }
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
@@ -14289,14 +14914,13 @@ static APXEVEXDecodeResult gen_apx_evex_kmov(
         TCGv_i64 value = tcg_temp_new_i64(tcg_ctx);
 
         gen_rex2_memory_address(s, address);
-        gen_helper_apx_memory_check(
-            tcg_ctx, tcg_ctx->cpu_env, s->A0,
-            tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
+        gen_rex2_memory_range_check(s, stack_segment, width);
         if (opcode == 0x90) {
             gen_rex2_load_memory(s, value, width);
             tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                            offsetof(CPUX86State, opmask_regs) +
                                reg * sizeof(uint64_t));
+            gen_opmask_mark_inuse(s);
         } else {
             tcg_gen_ld_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                            offsetof(CPUX86State, opmask_regs) +
@@ -14323,6 +14947,7 @@ static APXEVEXDecodeResult gen_apx_evex_kmov(
         tcg_gen_st_i64(tcg_ctx, value, tcg_ctx->cpu_env,
                        offsetof(CPUX86State, opmask_regs) +
                            reg * sizeof(uint64_t));
+        gen_opmask_mark_inuse(s);
         tcg_temp_free_i64(tcg_ctx, value);
     } else {
         TCGv_i64 value;
@@ -14368,9 +14993,9 @@ static uint32_t evex_scalar_move_desc(int dst, int src1, int src2,
            (qword ? EVEX_SCALAR_MOVE_QWORD : 0);
 }
 
-static bool gen_evex_extended_memory_address_unchecked(
+static bool gen_evex_memory_address_details(
     CPUX86State *env, DisasContext *s, int p0, int p1, int modrm,
-    int disp8_scale)
+    int disp8_scale, bool *uses_egpr)
 {
     const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
                      (!(p0 & 0x40) ? 0x02 : 0) |
@@ -14382,22 +15007,73 @@ static bool gen_evex_extended_memory_address_unchecked(
         s->override == R_SS ||
         (s->override < 0 && address.def_seg == R_SS);
 
+    if (uses_egpr) {
+        *uses_egpr = address.base >= 16 || address.index >= 16;
+    }
     gen_rex2_memory_address(s, address);
     return stack_segment;
+}
+
+static bool gen_evex_extended_memory_address_unchecked(
+    CPUX86State *env, DisasContext *s, int p0, int p1, int modrm,
+    int disp8_scale)
+{
+    return gen_evex_memory_address_details(env, s, p0, p1, modrm,
+                                           disp8_scale, NULL);
 }
 
 static void gen_evex_extended_memory_address(CPUX86State *env,
                                              DisasContext *s, int p0,
                                              int p1, int modrm,
-                                             int disp8_scale)
+                                             int disp8_scale,
+                                             int access_bytes)
 {
-    TCGContext *tcg_ctx = s->uc->tcg_ctx;
     const bool stack_segment = gen_evex_extended_memory_address_unchecked(
         env, s, p0, p1, modrm, disp8_scale);
 
-    gen_helper_apx_memory_check(
+    gen_rex2_memory_range_check(s, stack_segment, access_bytes);
+}
+
+static void gen_evex_masked_memory_check(DisasContext *s,
+                                         bool stack_segment, int mask_reg,
+                                         int active_elements,
+                                         int access_bytes,
+                                         bool tuple_access)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+
+    gen_helper_apx_evex_memory_check(
         tcg_ctx, tcg_ctx->cpu_env, s->A0,
-        tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
+        tcg_const_i32(tcg_ctx, mask_reg),
+        tcg_const_i32(tcg_ctx, active_elements),
+        tcg_const_i32(tcg_ctx, access_bytes),
+        tcg_const_i32(tcg_ctx,
+                      (stack_segment ? APX_MEMORY_SS : 0) |
+                          (tuple_access ? APX_MEMORY_TUPLE : 0)));
+}
+
+/* Existing EVEX instructions use the ordinary X/B extensions unless APX
+ * promotes the address to X4/B4.  Keep the ordinary path unchanged.  For an
+ * APX address, canonicality is checked only when the architectural writemask
+ * selects at least one lane, preserving EVEX fault suppression. */
+static bool gen_evex_memory_address(CPUX86State *env, DisasContext *s,
+                                    int p0, int p1, int modrm,
+                                    int disp8_scale, int mask_reg,
+                                    int active_elements, int access_bytes,
+                                    bool tuple_access)
+{
+    bool uses_egpr;
+    const bool stack_segment = gen_evex_memory_address_details(
+        env, s, p0, p1, modrm, disp8_scale, &uses_egpr);
+
+    if (uses_egpr && (!CODE64(s) || !apx_f_enabled(s))) {
+        gen_illegal_opcode(s);
+        return false;
+    }
+    gen_evex_masked_memory_check(s, stack_segment, mask_reg,
+                                 active_elements, access_bytes,
+                                 tuple_access);
+    return true;
 }
 
 static APXEVEXDecodeResult gen_apx_evex_msr(
@@ -14690,40 +15366,37 @@ static APXEVEXDecodeResult gen_evex_scalar_lane(
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && !(p1 & 0x04)) ||
-        (reversed_extract && mod != 3)) {
+    if (reversed_extract && mod != 3) {
         return APX_EVEX_INVALID;
     }
-    if (mod != 3 && !apx_f_enabled(s) &&
-        ((p0 & 0x08) || !(p1 & 0x04))) {
-        return APX_EVEX_INVALID;
+    if (!x86_evex_require_features(
+            s,
+            element_shift < 2
+                ? CPUID_7_0_EBX_AVX512BW
+                : ((map == 3 &&
+                    (opcode == 0x16 || opcode == 0x22))
+                       ? CPUID_7_0_EBX_AVX512DQ
+                       : 0),
+            0, 0)) {
+        return APX_EVEX_DECODED;
     }
 
     if (extract) {
         int gpr_width = element_shift == 3 ? 8 : 4;
         bool memory_destination = mod != 3;
-        AddressParts address = {0};
-        bool stack_segment = false;
 
         if (reversed_extract) {
             dst = apx_evex_reg_field(p0, modrm);
             src = evex_vector_rm_field(p0, modrm);
-            if (p0 & 0x08) {
-                return APX_EVEX_INVALID;
-            }
         } else {
             src = apx_evex_reg_field(p0, modrm);
             if (memory_destination) {
-                const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
-                                 (!(p0 & 0x40) ? 0x02 : 0) |
-                                 ((p0 & 0x08) ? 0x10 : 0) |
-                                 (!(p1 & 0x04) ? 0x20 : 0);
-
                 s->rip_offset = 1;
-                address = decode_rex2_memory_address(env, s, modrm, rex2);
-                stack_segment =
-                    s->override == R_SS ||
-                    (s->override < 0 && address.def_seg == R_SS);
+                if (!gen_evex_memory_address(
+                        env, s, p0, p1, modrm, 1 << element_shift, 0, 1,
+                        1 << element_shift, false)) {
+                    return APX_EVEX_DECODED;
+                }
             } else {
                 dst = apx_evex_rm_field(p0, modrm);
             }
@@ -14740,11 +15413,6 @@ static APXEVEXDecodeResult gen_evex_scalar_lane(
                           evex_scalar_lane_desc(0, src, element_shift,
                                                 immediate, 0)));
         if (memory_destination) {
-            gen_rex2_memory_address(s, address);
-            gen_helper_apx_memory_check(
-                tcg_ctx, tcg_ctx->cpu_env, s->A0,
-                tcg_const_i32(tcg_ctx,
-                              stack_segment ? APX_MEMORY_SS : 0));
             gen_rex2_store_memory(s, value, 1 << element_shift);
         } else {
             gen_rex2_store_gpr(s, dst, value, gpr_width);
@@ -14757,33 +15425,20 @@ static APXEVEXDecodeResult gen_evex_scalar_lane(
     base = apx_evex_v_field(p1, p2);
     value = tcg_temp_new_i64(tcg_ctx);
     if (mod != 3) {
-        const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
-                         (!(p0 & 0x40) ? 0x02 : 0) |
-                         ((p0 & 0x08) ? 0x10 : 0) |
-                         (!(p1 & 0x04) ? 0x20 : 0);
-        AddressParts address;
-        bool stack_segment;
-
         s->rip_offset = 1;
-        address = decode_rex2_memory_address(env, s, modrm, rex2);
-        stack_segment =
-            s->override == R_SS ||
-            (s->override < 0 && address.def_seg == R_SS);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm, 1 << element_shift, 0, 1,
+                1 << element_shift, false)) {
+            tcg_temp_free_i64(tcg_ctx, value);
+            return APX_EVEX_DECODED;
+        }
         immediate = x86_ldub_code(env, s);
-        gen_rex2_memory_address(s, address);
-        gen_helper_apx_memory_check(
-            tcg_ctx, tcg_ctx->cpu_env, s->A0,
-            tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
         gen_rex2_load_memory(s, value, 1 << element_shift);
     } else {
         immediate = x86_ldub_code(env, s);
         if (insert_ps) {
             const int vector_source = evex_vector_rm_field(p0, modrm);
 
-            if (p0 & 0x08) {
-                tcg_temp_free_i64(tcg_ctx, value);
-                return APX_EVEX_INVALID;
-            }
             gen_helper_evex_extract_scalar_lane(
                 tcg_ctx, value, tcg_ctx->cpu_env,
                 tcg_const_i32(
@@ -14930,11 +15585,24 @@ static APXEVEXDecodeResult gen_evex_broadcast_lane(
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && (!register_allowed || !(p1 & 0x04) ||
-                      (p0 & 0x08))) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
+    if (mod == 3 && !register_allowed) {
         return APX_EVEX_INVALID;
+    }
+    {
+        uint32_t required_ebx =
+            vector_length != 2 ? CPUID_7_0_EBX_AVX512VL : 0;
+
+        if (opcode == 0x78 || opcode == 0x79) {
+            required_ebx |= CPUID_7_0_EBX_AVX512BW;
+        } else if ((opcode == 0x19 && !w) ||
+                   (opcode == 0x59 && !w) ||
+                   ((opcode == 0x1a || opcode == 0x5a) && w) ||
+                   ((opcode == 0x1b || opcode == 0x5b) && !w)) {
+            required_ebx |= CPUID_7_0_EBX_AVX512DQ;
+        }
+        if (!x86_evex_require_features(s, required_ebx, 0, 0)) {
+            return APX_EVEX_DECODED;
+        }
     }
 
     dst = apx_evex_reg_field(p0, modrm);
@@ -14947,20 +15615,15 @@ static APXEVEXDecodeResult gen_evex_broadcast_lane(
         gen_helper_evex_broadcast_lane_reg(
             tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, desc));
     } else {
-        const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
-                         (!(p0 & 0x40) ? 0x02 : 0) |
-                         ((p0 & 0x08) ? 0x10 : 0) |
-                         (!(p1 & 0x04) ? 0x20 : 0);
-        AddressParts address =
-            decode_rex2_memory_address(env, s, modrm, rex2);
-        const bool stack_segment =
-            s->override == R_SS ||
-            (s->override < 0 && address.def_seg == R_SS);
-
-        gen_rex2_memory_address(s, address);
-        gen_helper_apx_memory_check(
-            tcg_ctx, tcg_ctx->cpu_env, s->A0,
-            tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm, 1 << tuple_shift, mask_reg,
+                (16 << vector_length) >> element_shift,
+                (1 << element_shift) |
+                    (((1 << tuple_shift) >> element_shift)
+                     << APX_MEMORY_MODULO_ELEMENTS_SHIFT),
+                false)) {
+            return APX_EVEX_DECODED;
+        }
         gen_helper_evex_broadcast_lane_load(
             tcg_ctx, tcg_ctx->cpu_env, s->A0,
             tcg_const_i32(tcg_ctx, desc));
@@ -14990,12 +15653,6 @@ static APXEVEXDecodeResult gen_evex_gpr_vector_move(
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && !(p1 & 0x04)) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
-        return APX_EVEX_INVALID;
-    }
-
     vector_reg = apx_evex_reg_field(p0, modrm);
     value = tcg_temp_new_i64(tcg_ctx);
     if (mod == 3) {
@@ -15016,20 +15673,11 @@ static APXEVEXDecodeResult gen_evex_gpr_vector_move(
             gen_rex2_store_gpr(s, gpr, value, width);
         }
     } else {
-        const int rex2 = (!(p0 & 0x20) ? 0x01 : 0) |
-                         (!(p0 & 0x40) ? 0x02 : 0) |
-                         ((p0 & 0x08) ? 0x10 : 0) |
-                         (!(p1 & 0x04) ? 0x20 : 0);
-        AddressParts address =
-            decode_rex2_memory_address(env, s, modrm, rex2);
-        const bool stack_segment =
-            s->override == R_SS ||
-            (s->override < 0 && address.def_seg == R_SS);
-
-        gen_rex2_memory_address(s, address);
-        gen_helper_apx_memory_check(
-            tcg_ctx, tcg_ctx->cpu_env, s->A0,
-            tcg_const_i32(tcg_ctx, stack_segment ? APX_MEMORY_SS : 0));
+        if (!gen_evex_memory_address(env, s, p0, p1, modrm, width, 0,
+                                     1, width, false)) {
+            tcg_temp_free_i64(tcg_ctx, value);
+            return APX_EVEX_DECODED;
+        }
         if (to_vector) {
             gen_rex2_load_memory(s, value, width);
         } else {
@@ -15081,8 +15729,7 @@ static APXEVEXDecodeResult gen_evex_half_move(
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
     if (store) {
-        if (mod == 3 || (p1 & 0x78) != 0x78 || !(p2 & 0x08) ||
-            (!apx_f_enabled(s) && ((p0 & 0x08) || !(p1 & 0x04)))) {
+        if (mod == 3 || (p1 & 0x78) != 0x78 || !(p2 & 0x08)) {
             return APX_EVEX_INVALID;
         }
         src = apx_evex_reg_field(p0, modrm);
@@ -15093,7 +15740,11 @@ static APXEVEXDecodeResult gen_evex_half_move(
                 tcg_ctx,
                 evex_scalar_lane_desc(0, src, 3,
                                       opcode == 0x17 ? 1 : 0, 0)));
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 8);
+        if (!gen_evex_memory_address(env, s, p0, p1, modrm, 8, 0, 1, 8,
+                                     false)) {
+            tcg_temp_free_i64(tcg_ctx, value);
+            return APX_EVEX_DECODED;
+        }
         gen_rex2_store_memory(s, value, 8);
         tcg_temp_free_i64(tcg_ctx, value);
         return APX_EVEX_DECODED;
@@ -15105,18 +15756,18 @@ static APXEVEXDecodeResult gen_evex_half_move(
     if (mod == 3) {
         /* Only the no-prefix W0 forms have register sources: opcode 12 is
          * VMOVHLPS and opcode 16 is VMOVLHPS. */
-        if (mandatory != 0 || w || !(p1 & 0x04) || (p0 & 0x08)) {
+        if (mandatory != 0 || w) {
             tcg_temp_free_i64(tcg_ctx, value);
             return APX_EVEX_INVALID;
         }
         src = evex_vector_rm_field(p0, modrm);
         source_index = opcode == 0x12 ? 1 : 0;
     } else {
-        if (!apx_f_enabled(s) && ((p0 & 0x08) || !(p1 & 0x04))) {
+        if (!gen_evex_memory_address(env, s, p0, p1, modrm, 8, 0, 1, 8,
+                                     false)) {
             tcg_temp_free_i64(tcg_ctx, value);
-            return APX_EVEX_INVALID;
+            return APX_EVEX_DECODED;
         }
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm, 8);
         gen_rex2_load_memory(s, value, 8);
         source_index = -1;
     }
@@ -15163,9 +15814,6 @@ static APXEVEXDecodeResult gen_evex_scalar_move(
     mod = modrm >> 6;
     reg = apx_evex_reg_field(p0, modrm);
     if (mod == 3) {
-        if (!(p1 & 0x04) || (p0 & 0x08)) {
-            return APX_EVEX_INVALID;
-        }
         src1 = apx_evex_v_field(p1, p2);
         src2 = evex_vector_rm_field(p0, modrm);
         desc = evex_scalar_move_desc(reg, src1, src2, mask_reg, zero,
@@ -15176,13 +15824,15 @@ static APXEVEXDecodeResult gen_evex_scalar_move(
     }
 
     if ((p1 & 0x78) != 0x78 || !(p2 & 0x08) ||
-        (opcode == 0x11 && zero) ||
-        (!apx_f_enabled(s) && ((p0 & 0x08) || !(p1 & 0x04)))) {
+        (opcode == 0x11 && zero)) {
         return APX_EVEX_INVALID;
     }
     desc = evex_scalar_move_desc(reg, 0, 0, mask_reg, zero, qword);
-    gen_evex_extended_memory_address(env, s, p0, p1, modrm,
-                                     qword ? 8 : 4);
+    if (!gen_evex_memory_address(env, s, p0, p1, modrm,
+                                 qword ? 8 : 4, mask_reg, 1,
+                                 qword ? 8 : 4, false)) {
+        return APX_EVEX_DECODED;
+    }
     if (opcode == 0x10) {
         gen_helper_evex_scalar_move_load(
             tcg_ctx, tcg_ctx->cpu_env, s->A0,
@@ -15234,15 +15884,20 @@ static APXEVEXDecodeResult gen_evex_non_temporal_move(
         return APX_EVEX_INVALID;
     }
     modrm = x86_ldub_code(env, s);
-    if ((modrm >> 6) == 3 ||
-        (!apx_f_enabled(s) && ((p0 & 0x08) || !(p1 & 0x04)))) {
+    if ((modrm >> 6) == 3) {
         return APX_EVEX_INVALID;
+    }
+    if (vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return APX_EVEX_DECODED;
     }
 
     reg = apx_evex_reg_field(p0, modrm);
     vector_bytes = 16 << vector_length;
-    gen_evex_extended_memory_address(env, s, p0, p1, modrm,
-                                     vector_bytes);
+    if (!gen_evex_memory_address(env, s, p0, p1, modrm, vector_bytes, 0,
+                                 1, vector_bytes, true)) {
+        return APX_EVEX_DECODED;
+    }
     desc = evex_vmovdqu_desc(reg, 0, 3, vector_length, 0, false) |
            EVEX_VMOV_ALIGNED;
     if (load) {
@@ -15273,6 +15928,7 @@ static bool gen_evex_crypto(CPUX86State *env, DisasContext *s,
     bool masking = false;
     bool immediate_form = false;
     EVEXCryptoOp operation;
+    uint32_t required_feature;
     int modrm, mod;
     int dst, src1, src2 = 0;
     uint32_t immediate = 0;
@@ -15301,6 +15957,21 @@ static bool gen_evex_crypto(CPUX86State *env, DisasContext *s,
         return false;
     }
 
+    if (operation == EVEX_CRYPTO_AES_ENC ||
+        operation == EVEX_CRYPTO_AES_ENC_LAST ||
+        operation == EVEX_CRYPTO_AES_DEC ||
+        operation == EVEX_CRYPTO_AES_DEC_LAST) {
+        required_feature = CPUID_7_0_ECX_VAES;
+    } else if (operation == EVEX_CRYPTO_PCLMUL) {
+        required_feature = CPUID_7_0_ECX_VPCLMULQDQ;
+    } else {
+        required_feature = CPUID_7_0_ECX_GFNI;
+    }
+    if (!(s->cpuid_7_0_ecx_features & required_feature)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
+
     vector_length = (p2 >> 5) & 3;
     mask_reg = p2 & 7;
     zero = (p2 & 0x80) != 0;
@@ -15310,12 +15981,15 @@ static bool gen_evex_crypto(CPUX86State *env, DisasContext *s,
          operation != EVEX_CRYPTO_GF_AFFINE_INV)) {
         return false;
     }
+    if (vector_length != 2 &&
+        !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512VL)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && (!(p1 & 0x04) || (p0 & 0x08) || evex_b)) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
+    if (mod == 3 && evex_b) {
         return false;
     }
 
@@ -15331,8 +16005,16 @@ static bool gen_evex_crypto(CPUX86State *env, DisasContext *s,
         if (immediate_form) {
             s->rip_offset = 1;
         }
-        gen_evex_extended_memory_address(
-            env, s, p0, p1, modrm, evex_b ? 8 : vector_bytes);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm, evex_b ? 8 : vector_bytes,
+                operation == EVEX_CRYPTO_GF_MUL ? mask_reg : 0,
+                vector_bytes,
+                operation == EVEX_CRYPTO_GF_MUL
+                    ? 1
+                    : (evex_b ? 8 : vector_bytes),
+                operation != EVEX_CRYPTO_GF_MUL)) {
+            return true;
+        }
         if (immediate_form) {
             immediate = x86_ldub_code(env, s);
         }
@@ -15373,14 +16055,15 @@ static bool gen_evex_dbpsadbw(CPUX86State *env, DisasContext *s,
     if ((p2 & 0x10) || vector_length == 3 || (zero && !mask_reg)) {
         return false;
     }
+    if (!(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512BW) ||
+        (vector_length != 2 &&
+         !(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_AVX512VL))) {
+        gen_illegal_opcode(s);
+        return true;
+    }
 
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && (!(p1 & 0x04) || (p0 & 0x08))) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
-        return false;
-    }
 
     dst = apx_evex_reg_field(p0, modrm);
     src1 = apx_evex_v_field(p1, p2);
@@ -15390,8 +16073,11 @@ static bool gen_evex_dbpsadbw(CPUX86State *env, DisasContext *s,
     } else {
         /* Account for the trailing imm8 in RIP-relative addressing. */
         s->rip_offset = 1;
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm,
-                                         16 << vector_length);
+        if (!gen_evex_memory_address(env, s, p0, p1, modrm,
+                                     16 << vector_length, 0, 1,
+                                     16 << vector_length, true)) {
+            return true;
+        }
         immediate = x86_ldub_code(env, s);
     }
 
@@ -15421,6 +16107,7 @@ static bool gen_evex_four_memory_ops(CPUX86State *env, DisasContext *s,
     bool scalar = false;
     bool negative = false;
     bool saturating = false;
+    uint32_t required_feature;
     int modrm;
     int dst, source;
     uint32_t desc;
@@ -15456,8 +16143,13 @@ static bool gen_evex_four_memory_ops(CPUX86State *env, DisasContext *s,
     default:
         return false;
     }
-    if ((p2 & 0x10) || (zero && !mask_reg) || !(p1 & 0x04) ||
-        (p0 & 0x08)) {
+    required_feature = four_fma ? CPUID_7_0_EDX_AVX512_4FMAPS
+                                : CPUID_7_0_EDX_AVX512_4VNNIW;
+    if (!(s->cpuid_7_0_edx_features & required_feature)) {
+        gen_illegal_opcode(s);
+        return true;
+    }
+    if ((p2 & 0x10) || (zero && !mask_reg)) {
         return false;
     }
 
@@ -15467,7 +16159,10 @@ static bool gen_evex_four_memory_ops(CPUX86State *env, DisasContext *s,
     }
     dst = apx_evex_reg_field(p0, modrm);
     source = apx_evex_v_field(p1, p2);
-    gen_evex_extended_memory_address(env, s, p0, p1, modrm, 16);
+    if (!gen_evex_memory_address(env, s, p0, p1, modrm, 16, mask_reg,
+                                 scalar ? 1 : 16, 16, true)) {
+        return true;
+    }
     desc = evex_four_desc(dst, source, mask_reg, zero, scalar, negative,
                           saturating);
     if (four_fma) {
@@ -15514,10 +16209,17 @@ static bool gen_evex_fpclass(CPUX86State *env, DisasContext *s,
     mod = modrm >> 6;
     /* A mask-register destination has no EVEX R/R' extension. */
     if ((p0 & 0x90) != 0x90 ||
-        (mod == 3 && ((p0 & 0x08) || broadcast)) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
+        (mod == 3 && broadcast)) {
         return false;
+    }
+    if (!x86_evex_require_features(
+            s,
+            CPUID_7_0_EBX_AVX512DQ |
+                (!scalar && vector_length != 2
+                     ? CPUID_7_0_EBX_AVX512VL
+                     : 0),
+            0, 0)) {
+        return true;
     }
     dst = (modrm >> 3) & 7;
     if (mod == 3) {
@@ -15527,9 +16229,14 @@ static bool gen_evex_fpclass(CPUX86State *env, DisasContext *s,
         const int element_bytes = is_double ? 8 : 4;
 
         s->rip_offset = 1;
-        gen_evex_extended_memory_address(
-            env, s, p0, p1, modrm,
-            scalar || broadcast ? element_bytes : 16 << vector_length);
+        if (!gen_evex_memory_address(
+                env, s, p0, p1, modrm,
+                scalar || broadcast ? element_bytes : 16 << vector_length,
+                mask_reg,
+                scalar ? 1 : (16 << vector_length) / element_bytes,
+                element_bytes, broadcast)) {
+            return true;
+        }
         immediate = x86_ldub_code(env, s);
     }
     desc = evex_fpclass_desc(dst, src, vector_length, mask_reg,
@@ -15566,18 +16273,18 @@ static bool gen_evex_comi(CPUX86State *env, DisasContext *s,
     }
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
-    if ((mod == 3 && (p0 & 0x08)) ||
-        (mod != 3 && (sae ||
-                      (!apx_f_enabled(s) &&
-                       ((p0 & 0x08) || !(p1 & 0x04)))))) {
+    if (mod != 3 && sae) {
         return false;
     }
     left = apx_evex_reg_field(p0, modrm);
     if (mod == 3) {
         right = evex_vector_rm_field(p0, modrm);
     } else {
-        gen_evex_extended_memory_address(env, s, p0, p1, modrm,
-                                         is_double ? 8 : 4);
+        if (!gen_evex_memory_address(env, s, p0, p1, modrm,
+                                     is_double ? 8 : 4, 0, 1,
+                                     is_double ? 8 : 4, false)) {
+            return true;
+        }
     }
     desc = evex_comi_desc(left, right, is_double, quiet, sae);
     if (mod == 3) {
@@ -15622,10 +16329,7 @@ static bool gen_evex_fcmp(CPUX86State *env, DisasContext *s,
     modrm = x86_ldub_code(env, s);
     mod = modrm >> 6;
     /* A mask-register destination has no EVEX R/R' extension. */
-    if ((p0 & 0x90) != 0x90 ||
-        (mod == 3 && (p0 & 0x08)) ||
-        (mod != 3 && !apx_f_enabled(s) &&
-         ((p0 & 0x08) || !(p1 & 0x04)))) {
+    if ((p0 & 0x90) != 0x90) {
         return false;
     }
     if (mod == 3) {
@@ -15647,6 +16351,10 @@ static bool gen_evex_fcmp(CPUX86State *env, DisasContext *s,
         }
         broadcast = b;
     }
+    if (!scalar && vector_length != 2 &&
+        !x86_evex_require_features(s, CPUID_7_0_EBX_AVX512VL, 0, 0)) {
+        return true;
+    }
 
     dst = (modrm >> 3) & 7;
     src1 = apx_evex_v_field(p1, p2);
@@ -15655,11 +16363,17 @@ static bool gen_evex_fcmp(CPUX86State *env, DisasContext *s,
         immediate = x86_ldub_code(env, s);
     } else {
         const int element_bytes = is_double ? 8 : 4;
+        bool uses_egpr;
 
         s->rip_offset = 1;
-        stack_segment = gen_evex_extended_memory_address_unchecked(
+        stack_segment = gen_evex_memory_address_details(
             env, s, p0, p1, modrm,
-            scalar || broadcast ? element_bytes : 16 << vector_length);
+            scalar || broadcast ? element_bytes : 16 << vector_length,
+            &uses_egpr);
+        if (uses_egpr && (!CODE64(s) || !apx_f_enabled(s))) {
+            gen_illegal_opcode(s);
+            return true;
+        }
         immediate = x86_ldub_code(env, s);
     }
 
@@ -15969,10 +16683,7 @@ static bool gen_apx_evex_scalar_other(CPUX86State *env, DisasContext *s,
                     (s->override < 0 && address.def_seg == R_SS);
 
                 gen_rex2_memory_address(s, address);
-                gen_helper_apx_memory_check(
-                    s->uc->tcg_ctx, s->uc->tcg_ctx->cpu_env, s->A0,
-                    tcg_const_i32(s->uc->tcg_ctx,
-                                  stack_segment ? APX_MEMORY_SS : 0));
+                gen_rex2_memory_range_check(s, stack_segment, width);
                 gen_rex2_load_memory(s, s->T0, width);
             }
             gen_apx_implicit_mul_div(s, extension, width, nf);
@@ -16471,8 +17182,59 @@ static void gen_rex2_binary_memory(DisasContext *s, REX2BinaryOp op, int reg,
     tcg_temp_free_i64(tcg_ctx, rhs);
 }
 
+static void gen_rex2_imul(DisasContext *s, int dst, int src, int width,
+                          bool memory_source)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i64 lhs = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 rhs = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 result = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 overflow = tcg_temp_new_i64(tcg_ctx);
+
+    gen_rex2_load_gpr(s, lhs, dst, width);
+    if (memory_source) {
+        gen_rex2_load_memory(s, rhs, width);
+    } else {
+        gen_rex2_load_gpr(s, rhs, src, width);
+    }
+
+    if (width == 8) {
+        TCGv_i64 high = tcg_temp_new_i64(tcg_ctx);
+
+        tcg_gen_muls2_i64(tcg_ctx, result, high, lhs, rhs);
+        tcg_gen_sari_i64(tcg_ctx, overflow, result, 63);
+        tcg_gen_sub_i64(tcg_ctx, overflow, overflow, high);
+        tcg_temp_free_i64(tcg_ctx, high);
+    } else {
+        if (width == 2) {
+            tcg_gen_ext16s_i64(tcg_ctx, lhs, lhs);
+            tcg_gen_ext16s_i64(tcg_ctx, rhs, rhs);
+        } else {
+            tcg_gen_ext32s_i64(tcg_ctx, lhs, lhs);
+            tcg_gen_ext32s_i64(tcg_ctx, rhs, rhs);
+        }
+        tcg_gen_mul_i64(tcg_ctx, result, lhs, rhs);
+        if (width == 2) {
+            tcg_gen_ext16s_i64(tcg_ctx, overflow, result);
+        } else {
+            tcg_gen_ext32s_i64(tcg_ctx, overflow, result);
+        }
+        tcg_gen_sub_i64(tcg_ctx, overflow, result, overflow);
+    }
+
+    gen_rex2_store_gpr(s, dst, result, width);
+    tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_cc_dst, result);
+    tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_cc_src, overflow);
+    set_cc_op(s, CC_OP_MULB + rex2_width_memop(width));
+
+    tcg_temp_free_i64(tcg_ctx, overflow);
+    tcg_temp_free_i64(tcg_ctx, result);
+    tcg_temp_free_i64(tcg_ctx, rhs);
+    tcg_temp_free_i64(tcg_ctx, lhs);
+}
+
 /* Fail-closed REX2 scalar slice. It owns D5 in 64-bit mode and accepts the
- * map-0 MOV/ALU register and memory forms implemented below. */
+ * explicitly implemented map-0 and map-1 register/memory forms below. */
 static bool gen_rex2_register(CPUX86State *env, DisasContext *s, int rex_byte)
 {
     int rex2 = x86_ldub_code(env, s);
@@ -16501,12 +17263,44 @@ static bool gen_rex2_register(CPUX86State *env, DisasContext *s, int rex_byte)
         return true;
     }
 
-    /* M0=0 selects legacy map 0. REX2 must be the final prefix and cannot
-     * follow REX. Unsupported LOCK forms fail closed; other legacy prefixes
-     * are architecturally ignored except 66, which selects 16-bit operands
-     * when W is clear. */
-    if (rex_byte || (s->prefix & PREFIX_LOCK) || (rex2 & 0x80)) {
+    /* REX2 must be the final prefix and cannot immediately follow an
+     * effective REX. Legacy prefixes retain their normal meanings and
+     * restrictions; 66 selects 16-bit operands when W is clear. */
+    if (rex_byte || (s->prefix & PREFIX_LOCK)) {
         return false;
+    }
+
+    /* M0=1 selects legacy map 1 without an encoded 0F byte.  Keep this
+     * allowlist narrow until each inherited opcode has its own semantics and
+     * legality coverage. */
+    if (rex2 & 0x80) {
+        if (opcode != 0xaf) {
+            return false;
+        }
+
+        modrm = x86_ldub_code(env, s);
+        mod = (modrm >> 6) & 3;
+        reg = ((modrm >> 3) & 7) | ((rex2 & 0x04) << 1) |
+              ((rex2 & 0x40) >> 2);
+        width = (rex2 & 0x08)               ? 8
+                : (s->prefix & PREFIX_DATA) ? 2
+                                            : 4;
+        if (mod != 3) {
+            AddressParts address =
+                decode_rex2_memory_address(env, s, modrm, rex2);
+            const bool stack_segment =
+                s->override == R_SS ||
+                (s->override < 0 && address.def_seg == R_SS);
+
+            gen_rex2_memory_address(s, address);
+            gen_rex2_memory_range_check(s, stack_segment, width);
+            gen_rex2_imul(s, reg, 0, width, true);
+            return true;
+        }
+
+        rm = (modrm & 7) | ((rex2 & 0x01) << 3) | (rex2 & 0x10);
+        gen_rex2_imul(s, reg, rm, width, false);
+        return true;
     }
 
     if ((opcode & 0xf8) == 0x50 || (opcode & 0xf8) == 0x58) {
@@ -16599,8 +17393,12 @@ static bool gen_rex2_register(CPUX86State *env, DisasContext *s, int rex_byte)
 
     if (mod != 3) {
         AddressParts address = decode_rex2_memory_address(env, s, modrm, rex2);
+        const bool stack_segment =
+            s->override == R_SS ||
+            (s->override < 0 && address.def_seg == R_SS);
 
         gen_rex2_memory_address(s, address);
+        gen_rex2_memory_range_check(s, stack_segment, width);
         if (opcode >= 0x88) {
             gen_rex2_mov_memory(s, reg, width, destination_is_reg);
         } else {
@@ -16640,7 +17438,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
     target_ulong next_eip, tval;
-    int rex_w, rex_r, rex_byte, rex_index;
+    int rex_w, rex_r, rex_byte, rex_index, effective_rex_byte;
     target_ulong pc_start = s->base.pc_next;
     TCGOp *tcg_op, *prev_op = NULL;
     bool insn_hook = false;
@@ -16704,6 +17502,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     rex_r = 0;
     rex_byte = 0;
     rex_index = -1;
+    effective_rex_byte = 0;
     prefix_count = 0;
 
  next_byte:
@@ -16810,7 +17609,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                 goto illegal_op;
             }
 #ifdef TARGET_X86_64
-            if (rex_byte != 0) {
+            if (rex_byte != 0 && rex_index + 1 == prefix_count) {
                 goto illegal_op;
             }
 #endif
@@ -16866,6 +17665,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         /* 2.2.1: A REX prefix is ignored when it does not immediately precede the opcode byte */
         if (rex_byte != 0 && rex_index + 1 == prefix_count) {
             /* REX prefix */
+            effective_rex_byte = rex_byte;
             rex_w = (rex_byte >> 3) & 1;
             rex_r = (rex_byte & 0x4) << 1;
             s->rex_x = (rex_byte & 0x2) << 2;
@@ -19654,7 +20454,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 #ifdef TARGET_X86_64
         if (CODE64(s)) {
             if (!apx_f_enabled(s) ||
-                !gen_rex2_register(env, s, rex_byte)) {
+                !gen_rex2_register(env, s, effective_rex_byte)) {
                 goto illegal_op;
             }
             break;
@@ -19742,7 +20542,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         break;
     case 0x62: /* bound */
         if (CODE64(s)) {
-            if (!gen_evex_instruction(env, s, rex_byte, false)) {
+            if (!gen_evex_instruction(env, s, effective_rex_byte, false)) {
                 goto illegal_op;
             }
             break;
@@ -19753,7 +20553,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             val = x86_ldub_code(env, s);
             s->pc--;
             if ((val & 0xc0) == 0xc0) {
-                if (!gen_evex_instruction(env, s, rex_byte, true)) {
+                if (!gen_evex_instruction(env, s, effective_rex_byte, true)) {
                     goto illegal_op;
                 }
                 break;
@@ -20467,6 +21267,15 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                 goto illegal_op;
             gen_nop_modrm(env, s, modrm);
             /* nothing more to do */
+            break;
+        case 4: /* prefetchrst2 */
+            if (mod == 3 || (prefixes & PREFIX_LOCK)) {
+                goto illegal_op;
+            }
+            /* With PREFETCHRST this is PREFETCHRST2; without it the same
+             * memory form is NOP0F18r4.  Both consume the complete address
+             * encoding without performing an architectural access. */
+            gen_nop_modrm(env, s, modrm);
             break;
         default: /* nop (multi byte) */
             gen_nop_modrm(env, s, modrm);
@@ -21286,6 +22095,7 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     dc->cpuid_ext3_features = env->features[FEAT_8000_0001_ECX];
     dc->cpuid_7_0_ebx_features = env->features[FEAT_7_0_EBX];
     dc->cpuid_7_0_ecx_features = env->features[FEAT_7_0_ECX];
+    dc->cpuid_7_0_edx_features = env->features[FEAT_7_0_EDX];
     dc->cpuid_7_1_eax_features = env->features[FEAT_7_1_EAX];
     dc->cpuid_7_1_ecx_features = env->features[FEAT_7_1_ECX];
     dc->cpuid_7_1_edx_features = env->features[FEAT_7_1_EDX];

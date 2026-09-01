@@ -241,6 +241,18 @@ static int x86_msr_write(CPUX86State *env, uc_x86_msr *msr)
     return 0;
 }
 
+static bool x86_tilecfg_is_init_state(const uint8_t tilecfg[64])
+{
+    unsigned int i;
+
+    for (i = 0; i < 64; i++) {
+        if (tilecfg[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 DEFAULT_VISIBILITY
 uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
                 size_t *size)
@@ -1242,10 +1254,16 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
     case UC_X86_REG_K7:
         CHECK_REG_TYPE(uint64_t);
         env->opmask_regs[regid - UC_X86_REG_K0] = *(const uint64_t *)value;
+        env->xstate_bv |= XSTATE_OPMASK_MASK;
         return ret;
     case UC_X86_REG_TILECFG:
         CHECK_REG_TYPE(uint8_t[64]);
         memcpy(env->xtilecfg, value, sizeof(env->xtilecfg));
+        if (x86_tilecfg_is_init_state(env->xtilecfg)) {
+            env->xstate_bv &= ~XSTATE_XTILE_CFG_MASK;
+        } else {
+            env->xstate_bv |= XSTATE_XTILE_CFG_MASK;
+        }
         return ret;
     case UC_X86_REG_TMM0:
     case UC_X86_REG_TMM1:
@@ -1257,6 +1275,7 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
     case UC_X86_REG_TMM7:
         CHECK_REG_TYPE(uint8_t[1024]);
         memcpy(env->xtiledata[regid - UC_X86_REG_TMM0], value, 1024);
+        env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
         return ret;
     case UC_X86_REG_XMM0:
     case UC_X86_REG_XMM1:
@@ -2075,6 +2094,9 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             ZMMReg *reg = &env->xmm_regs[regid - UC_X86_REG_XMM0];
             reg->ZMM_Q(0) = src[0];
             reg->ZMM_Q(1) = src[1];
+            if (regid >= UC_X86_REG_XMM16) {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_YMM8:
@@ -2108,6 +2130,9 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             reg->ZMM_Q(1) = src[1];
             reg->ZMM_Q(2) = src[2];
             reg->ZMM_Q(3) = src[3];
+            if (regid >= UC_X86_REG_YMM16) {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_ZMM0:
@@ -2153,6 +2178,11 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             reg->ZMM_Q(5) = src[5];
             reg->ZMM_Q(6) = src[6];
             reg->ZMM_Q(7) = src[7];
+            if (regid <= UC_X86_REG_ZMM15) {
+                env->xstate_bv |= XSTATE_ZMM_Hi256_MASK;
+            } else {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_FS_BASE:

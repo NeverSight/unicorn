@@ -24,6 +24,13 @@
 
 void cpu_sync_bndcs_hflags(CPUX86State *env)
 {
+    const uint32_t avx512_cpuid = CPUID_EXT_XSAVE | CPUID_EXT_AVX;
+    const uint64_t avx512_xstate =
+        XSTATE_FP_MASK | XSTATE_SSE_MASK | XSTATE_YMM_MASK |
+        XSTATE_OPMASK_MASK | XSTATE_ZMM_Hi256_MASK |
+        XSTATE_Hi16_ZMM_MASK;
+    const uint64_t amx_xstate =
+        XSTATE_XTILE_CFG_MASK | XSTATE_XTILE_DATA_MASK;
     uint32_t hflags = env->hflags;
     uint32_t hflags2 = env->hflags2;
     uint32_t bndcsr;
@@ -48,6 +55,23 @@ void cpu_sync_bndcs_hflags(CPUX86State *env)
         hflags |= HF_AVX_EN_MASK;
     } else {
         hflags &= ~HF_AVX_EN_MASK;
+    }
+
+    if ((env->features[FEAT_1_ECX] & avx512_cpuid) == avx512_cpuid &&
+        (env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_AVX512F) &&
+        (env->cr[4] & CR4_OSXSAVE_MASK) &&
+        (env->xcr0 & avx512_xstate) == avx512_xstate) {
+        hflags |= HF_AVX512_EN_MASK;
+    } else {
+        hflags &= ~HF_AVX512_EN_MASK;
+    }
+
+    if ((env->features[FEAT_7_0_EDX] & CPUID_7_0_EDX_AMX_TILE) &&
+        (env->cr[4] & CR4_OSXSAVE_MASK) &&
+        (env->xcr0 & amx_xstate) == amx_xstate) {
+        hflags |= HF_AMX_EN_MASK;
+    } else {
+        hflags &= ~HF_AMX_EN_MASK;
     }
 
     if ((env->features[FEAT_7_1_EDX] & CPUID_7_1_EDX_APX_F) &&
