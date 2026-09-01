@@ -1604,7 +1604,7 @@ typedef enum EVEXNarrowMode {
 #define EVEX_PCMP_PRED_SHIFT 20
 #define EVEX_PCMP_UNSIGNED (1U << 23)
 
-/* Internal descriptor for register-only EVEX compress/expand operations. */
+/* Internal descriptor for EVEX compress/expand operations. */
 #define EVEX_CE_DST_SHIFT 0
 #define EVEX_CE_REG_MASK 0x1f
 #define EVEX_CE_SRC_SHIFT 5
@@ -1613,6 +1613,7 @@ typedef enum EVEXNarrowMode {
 #define EVEX_CE_MASK_SHIFT 14
 #define EVEX_CE_ZERO (1U << 17)
 #define EVEX_CE_EXPAND (1U << 18)
+#define EVEX_CE_STACK (1U << 19)
 
 /* Internal descriptor for EVEX 14-bit approximations. */
 #define EVEX_APPROX14_DST_SHIFT 0

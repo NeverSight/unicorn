@@ -1737,6 +1737,103 @@ static void evex_vmovdqu_store_element(CPUX86State *env,
                                        target_ulong address,
                                        int element_bytes, uint64_t value,
                                        uintptr_t ra);
+static void apx_evex_check_memory_range(CPUX86State *env, uint64_t address,
+                                        uint32_t access_bytes,
+                                        uint32_t desc, uintptr_t ra);
+
+static target_ulong evex_compress_expand_element_address(
+    CPUX86State *env, target_ulong address, int packed, int element_bytes,
+    uint32_t desc, uintptr_t ra)
+{
+    const uint64_t offset = (uint64_t)packed * element_bytes;
+
+#ifdef TARGET_X86_64
+    if ((uint64_t)address > UINT64_MAX - offset) {
+        const int exception =
+            (desc & EVEX_CE_STACK) ? EXCP0C_STACK : EXCP0D_GPF;
+
+        raise_exception_err_ra(env, exception, 0, ra);
+    }
+#endif
+    address += (target_ulong)offset;
+    apx_evex_check_memory_range(
+        env, address, element_bytes,
+        (desc & EVEX_CE_STACK) ? APX_MEMORY_SS : 0, ra);
+    return address;
+}
+
+void helper_evex_compress_expand_mem(CPUX86State *env,
+                                     target_ulong address, uint32_t desc,
+                                     target_ulong fault_eip)
+{
+    const int dst = (desc >> EVEX_CE_DST_SHIFT) & EVEX_CE_REG_MASK;
+    const int src = (desc >> EVEX_CE_SRC_SHIFT) & EVEX_CE_REG_MASK;
+    const int element_shift = (desc >> EVEX_CE_ELEM_SHIFT) & 3;
+    const int element_bytes = 1 << element_shift;
+    const int vector_bytes = 16 << ((desc >> EVEX_CE_VL_SHIFT) & 3);
+    const int element_count = vector_bytes >> element_shift;
+    const int mask_reg = (desc >> EVEX_CE_MASK_SHIFT) & 7;
+    const uint64_t mask =
+        mask_reg ? env->opmask_regs[mask_reg] : UINT64_MAX;
+    const uintptr_t ra = GETPC();
+    int packed = 0;
+
+#ifndef TARGET_X86_64
+    (void)fault_eip;
+#endif
+    if (desc & EVEX_CE_EXPAND) {
+        ZMMReg result = env->xmm_regs[dst];
+
+        /* Stage every selected load before committing the destination. */
+        for (int output = 0; output < element_count; ++output) {
+            if ((mask >> output) & 1) {
+                const target_ulong element_address =
+                    evex_compress_expand_element_address(
+                        env, address, packed, element_bytes, desc, ra);
+                const uint64_t value = evex_vmovdqu_load_element(
+                    env, element_address, element_bytes, ra);
+
+                evex_integer_set_element(&result, output, element_bytes,
+                                         value);
+                ++packed;
+            } else if (desc & EVEX_CE_ZERO) {
+                evex_integer_set_element(&result, output, element_bytes, 0);
+            }
+        }
+        for (int byte = vector_bytes; byte < 64; ++byte) {
+            result.ZMM_B(byte) = 0;
+        }
+        evex_commit_zmm(env, dst, &result);
+        return;
+    }
+
+    {
+        const ZMMReg source = env->xmm_regs[src];
+
+        /* Stores are architecturally ordered: if a later store faults, the
+         * earlier selected elements remain visible. */
+        for (int input = 0; input < element_count; ++input) {
+            if ((mask >> input) & 1) {
+                const target_ulong element_address =
+                    evex_compress_expand_element_address(
+                        env, address, packed, element_bytes, desc, ra);
+                const uint64_t value = evex_integer_get_element(
+                    &source, input, element_bytes);
+
+#ifdef TARGET_X86_64
+                if (!x86_evex_store_preflight(
+                        env, element_address, element_bytes, value, ra)) {
+                    env->eip = fault_eip;
+                    cpu_loop_exit(env_cpu(env));
+                }
+#endif
+                evex_vmovdqu_store_element(
+                    env, element_address, element_bytes, value, ra);
+                ++packed;
+            }
+        }
+    }
+}
 
 static void evex_approx14_apply(CPUX86State *env, uint32_t desc,
                                 const ZMMReg *second_source)

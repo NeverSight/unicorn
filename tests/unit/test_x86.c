@@ -3,6 +3,14 @@
 const uint64_t code_start = 0x1000;
 const uint64_t code_len = 0x4000;
 
+typedef struct TestX86InterruptRecord {
+    uint32_t intno;
+    uint32_t count;
+} TestX86InterruptRecord;
+
+static void test_x86_record_interrupt(uc_engine *uc, uint32_t intno,
+                                      void *user_data);
+
 #define MEM_BASE 0x40000000
 #define MEM_SIZE 1024 * 1024
 #define MEM_STACK MEM_BASE + (MEM_SIZE / 2)
@@ -3200,15 +3208,14 @@ static void test_x86_evex_compress_expand_register_forms(void)
     TEST_CHECK(test_x86_evex_run_compress_expand_register(
         &operations[5], 64, 7, true, true));
 
-    /* Memory forms require dynamic, per-element fault suppression.  Until a
-     * dedicated helper supplies that contract, keep them fail-closed. */
+    /* Reserved encodings must fail before changing architectural state. */
     {
         static const struct {
             uint8_t code[6];
             const char *description;
         } invalid_cases[] = {
-            {{0x62, 0xf2, 0x7d, 0x4f, 0x89, 0x08}, "memory expand"},
-            {{0x62, 0xf2, 0x7d, 0x4f, 0x8b, 0x10}, "memory compress"},
+            {{0x62, 0xf2, 0x7d, 0xcf, 0x8b, 0x10},
+             "zeroing memory compress"},
             {{0x62, 0xf2, 0x7d, 0xc8, 0x89, 0xca}, "zeroing without mask"},
             {{0x62, 0xf2, 0x7d, 0x5f, 0x89, 0xca}, "reserved EVEX.b"},
             {{0x62, 0xf2, 0x7d, 0x6f, 0x89, 0xca}, "reserved EVEX.LL"},
@@ -3260,6 +3267,465 @@ static void test_x86_evex_compress_expand_register_forms(void)
                         invalid_cases[i].description);
             OK(uc_close(uc));
         }
+    }
+}
+
+static bool test_x86_evex_run_compress_expand_memory(
+    const TestX86EvexCompressExpandOp *operation, size_t vector_bytes,
+    int mask_reg, bool zeroing)
+{
+    const int ll = vector_bytes == 16 ? 0 : vector_bytes == 32 ? 1 : 2;
+    const int vector_index = 29;
+    const uint8_t code[] = {
+        0x62,
+        0x62,
+        (uint8_t)(0x7d | (operation->w ? 0x80 : 0)),
+        (uint8_t)((ll << 5) | 0x08 | mask_reg | (zeroing ? 0x80 : 0)),
+        operation->opcode,
+        (uint8_t)((vector_index & 7) << 3),
+    };
+    const uint64_t data_address = code_start + 0x800;
+    const uint64_t mask_value = UINT64_C(0xd6a59c3e71b4a5ad);
+    const uint64_t effective_mask = mask_reg ? mask_value : UINT64_MAX;
+    uint8_t initial_vector[64];
+    uint8_t vector[64];
+    uint8_t initial_memory[64];
+    uint8_t memory[64];
+    uint8_t expected[64];
+    uint64_t observed_mask = mask_value;
+    uint64_t rax = data_address;
+    uint64_t rflags = UINT64_C(0xcd7);
+    uint64_t rip = 0;
+    uc_engine *uc;
+    uc_err err;
+    bool passed;
+
+    for (size_t byte = 0; byte < 64; ++byte) {
+        initial_vector[byte] = (uint8_t)(0x91 + byte * 13);
+        initial_memory[byte] = (uint8_t)(0x27 + byte * 29);
+    }
+    memcpy(vector, initial_vector, sizeof(vector));
+    memcpy(memory, initial_memory, sizeof(memory));
+    if (operation->expand) {
+        test_x86_evex_compress_expand_expected(
+            expected, initial_vector, initial_memory, vector_bytes,
+            operation->element_bytes, effective_mask, zeroing, true);
+    } else {
+        size_t packed = 0;
+        const size_t elements = vector_bytes / operation->element_bytes;
+
+        memcpy(expected, initial_memory, sizeof(expected));
+        for (size_t input = 0; input < elements; ++input) {
+            if ((effective_mask >> input) & 1) {
+                memcpy(expected + packed * operation->element_bytes,
+                       initial_vector + input * operation->element_bytes,
+                       operation->element_bytes);
+                ++packed;
+            }
+        }
+    }
+
+    uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER, code,
+                        sizeof(code));
+    OK(uc_mem_write(uc, data_address, memory, sizeof(memory)));
+    OK(uc_reg_write(uc, UC_X86_REG_ZMM29, vector));
+    if (mask_reg) {
+        OK(uc_reg_write(uc, UC_X86_REG_K0 + mask_reg, &observed_mask));
+    }
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_write(uc, UC_X86_REG_RFLAGS, &rflags));
+
+    err = uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0);
+    if (!TEST_CHECK_(err == UC_ERR_OK,
+                     "%s memory VL%zu K%d %s did not execute: %s",
+                     operation->name, vector_bytes * 8, mask_reg,
+                     zeroing ? "zero" : "merge", uc_strerror(err))) {
+        OK(uc_close(uc));
+        return false;
+    }
+
+    OK(uc_reg_read(uc, UC_X86_REG_ZMM29, vector));
+    OK(uc_mem_read(uc, data_address, memory, sizeof(memory)));
+    if (mask_reg) {
+        OK(uc_reg_read(uc, UC_X86_REG_K0 + mask_reg, &observed_mask));
+    }
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+    OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+
+    if (operation->expand) {
+        passed = TEST_CHECK_(memcmp(vector, expected, sizeof(expected)) == 0,
+                             "%s memory result mismatch", operation->name);
+        passed &= TEST_CHECK_(memcmp(memory, initial_memory,
+                                     sizeof(initial_memory)) == 0,
+                              "%s changed source memory", operation->name);
+    } else {
+        passed = TEST_CHECK_(memcmp(memory, expected, sizeof(expected)) == 0,
+                             "%s memory result mismatch", operation->name);
+        passed &= TEST_CHECK_(memcmp(vector, initial_vector,
+                                     sizeof(initial_vector)) == 0,
+                              "%s changed source register", operation->name);
+    }
+    if (mask_reg) {
+        passed &= TEST_CHECK_(observed_mask == mask_value,
+                              "%s changed its writemask", operation->name);
+    }
+    passed &= TEST_CHECK_(rax == data_address, "%s changed its base register",
+                          operation->name);
+    passed &= TEST_CHECK_(rflags == UINT64_C(0xcd7), "%s changed RFLAGS",
+                          operation->name);
+    passed &= TEST_CHECK_(rip == code_start + sizeof(code),
+                          "%s advanced RIP incorrectly", operation->name);
+    OK(uc_close(uc));
+    return passed;
+}
+
+static void test_x86_evex_compress_expand_memory_forms(void)
+{
+    static const TestX86EvexCompressExpandOp operations[] = {
+        {"VPCOMPRESSD", 0x8b, 4, false, false},
+        {"VPCOMPRESSQ", 0x8b, 8, true, false},
+        {"VCOMPRESSPS", 0x8a, 4, false, false},
+        {"VCOMPRESSPD", 0x8a, 8, true, false},
+        {"VPEXPANDD", 0x89, 4, false, true},
+        {"VPEXPANDQ", 0x89, 8, true, true},
+        {"VEXPANDPS", 0x88, 4, false, true},
+        {"VEXPANDPD", 0x88, 8, true, true},
+    };
+    static const size_t vector_bytes_cases[] = {16, 32, 64};
+
+    for (size_t operation = 0;
+         operation < sizeof(operations) / sizeof(operations[0]);
+         ++operation) {
+        for (size_t vector_case = 0;
+             vector_case < sizeof(vector_bytes_cases) /
+                               sizeof(vector_bytes_cases[0]);
+             ++vector_case) {
+            const int mask_modes = operations[operation].expand ? 3 : 2;
+
+            for (int mask_mode = 0; mask_mode < mask_modes; ++mask_mode) {
+                const int mask_reg = mask_mode ? 7 : 0;
+                const bool zeroing = mask_mode == 2;
+
+                if (!test_x86_evex_run_compress_expand_memory(
+                        &operations[operation],
+                        vector_bytes_cases[vector_case], mask_reg,
+                        zeroing)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /* Complete VBMI2 is not advertised to TCG guests, so its memory forms
+     * must fail closed without changing architectural state. */
+    {
+        static const struct {
+            uint8_t code[6];
+            const char *name;
+        } cases[] = {
+            {{0x62, 0xf2, 0x7d, 0x4f, 0x62, 0x08}, "VPEXPANDB memory"},
+            {{0x62, 0xf2, 0xfd, 0x4f, 0x62, 0x08}, "VPEXPANDW memory"},
+            {{0x62, 0xf2, 0x7d, 0x4f, 0x63, 0x10}, "VPCOMPRESSB memory"},
+            {{0x62, 0xf2, 0xfd, 0x4f, 0x63, 0x10}, "VPCOMPRESSW memory"},
+        };
+        const uint64_t data_address = code_start + 0x800;
+
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            uint8_t initial_destination[64];
+            uint8_t observed_destination[64];
+            uint8_t initial_source[64];
+            uint8_t observed_source[64];
+            uint8_t initial_memory[64];
+            uint8_t observed_memory[64];
+            uint64_t mask = UINT64_C(0xd6a59c3e71b4a5ad);
+            uint64_t rax = data_address;
+            uint64_t rflags = UINT64_C(0xcd7);
+            uint64_t rip = UINT64_MAX;
+            uc_engine *uc;
+            uc_err err;
+
+            for (size_t byte = 0; byte < 64; ++byte) {
+                initial_destination[byte] = (uint8_t)(0x91 + byte * 13);
+                initial_source[byte] = (uint8_t)(0x43 + byte * 19);
+                initial_memory[byte] = (uint8_t)(0xb7 - byte * 11);
+            }
+            uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                                cases[i].code, sizeof(cases[i].code));
+            OK(uc_mem_write(uc, data_address, initial_memory,
+                            sizeof(initial_memory)));
+            OK(uc_reg_write(uc, UC_X86_REG_ZMM1, initial_destination));
+            OK(uc_reg_write(uc, UC_X86_REG_ZMM2, initial_source));
+            OK(uc_reg_write(uc, UC_X86_REG_K7, &mask));
+            OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+            OK(uc_reg_write(uc, UC_X86_REG_RFLAGS, &rflags));
+
+            err = uc_emu_start(uc, code_start,
+                               code_start + sizeof(cases[i].code), 0, 0);
+            OK(uc_reg_read(uc, UC_X86_REG_ZMM1, observed_destination));
+            OK(uc_reg_read(uc, UC_X86_REG_ZMM2, observed_source));
+            OK(uc_mem_read(uc, data_address, observed_memory,
+                           sizeof(observed_memory)));
+            OK(uc_reg_read(uc, UC_X86_REG_K7, &mask));
+            OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+            OK(uc_reg_read(uc, UC_X86_REG_RFLAGS, &rflags));
+            OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+
+            TEST_CHECK_(err == UC_ERR_INSN_INVALID, "%s did not #UD",
+                        cases[i].name);
+            TEST_CHECK_(memcmp(observed_destination, initial_destination,
+                               sizeof(initial_destination)) == 0,
+                        "%s changed destination", cases[i].name);
+            TEST_CHECK_(memcmp(observed_source, initial_source,
+                               sizeof(initial_source)) == 0,
+                        "%s changed source", cases[i].name);
+            TEST_CHECK_(memcmp(observed_memory, initial_memory,
+                               sizeof(initial_memory)) == 0,
+                        "%s changed memory", cases[i].name);
+            TEST_CHECK_(mask == UINT64_C(0xd6a59c3e71b4a5ad),
+                        "%s changed its writemask", cases[i].name);
+            TEST_CHECK_(rax == data_address, "%s changed its base register",
+                        cases[i].name);
+            TEST_CHECK_(rflags == UINT64_C(0xcd7), "%s changed RFLAGS",
+                        cases[i].name);
+            TEST_CHECK_(rip == code_start, "%s advanced RIP", cases[i].name);
+            OK(uc_close(uc));
+        }
+    }
+
+    /* Tuple1-scalar compressed displacement scales by element width. */
+    {
+        static const uint8_t code[] = {
+            0x62, 0xf2, 0xfd, 0x49, 0x89, 0x48, 0x03,
+        };
+        const uint64_t data_address = code_start + 0x900;
+        const uint64_t wanted = UINT64_C(0x1020304050607080);
+        uint64_t memory[32];
+        uint64_t destination[8];
+        uint64_t expected[8];
+        uint64_t mask = 1;
+        uint64_t rax = data_address;
+        uc_engine *uc;
+
+        for (size_t lane = 0; lane < 32; ++lane) {
+            memory[lane] = UINT64_C(0xdead000000000000) + lane;
+        }
+        for (size_t lane = 0; lane < 8; ++lane) {
+            destination[lane] = UINT64_C(0xa000000000000000) + lane;
+        }
+        memory[3] = wanted;
+        memcpy(expected, destination, sizeof(expected));
+        expected[0] = wanted;
+
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                            code, sizeof(code));
+        OK(uc_mem_write(uc, data_address, memory, sizeof(memory)));
+        OK(uc_reg_write(uc, UC_X86_REG_ZMM1, destination));
+        OK(uc_reg_write(uc, UC_X86_REG_K1, &mask));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_ZMM1, destination));
+        TEST_CHECK(memcmp(destination, expected, sizeof(expected)) == 0);
+        OK(uc_close(uc));
+    }
+
+    /* A zero writemask suppresses even a non-canonical memory operand. */
+    {
+        static const uint8_t code[] = {
+            0x62, 0xf2, 0x7d, 0xca, 0x89, 0x08,
+        };
+        uint8_t destination[64];
+        uint8_t expected[64] = {0};
+        uint64_t mask = 0;
+        uint64_t rax = UINT64_C(0x0000800000000000);
+        uc_engine *uc;
+
+        for (size_t byte = 0; byte < 64; ++byte) {
+            destination[byte] = (uint8_t)(0x31 + byte * 7);
+        }
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                            code, sizeof(code));
+        OK(uc_reg_write(uc, UC_X86_REG_ZMM1, destination));
+        OK(uc_reg_write(uc, UC_X86_REG_K2, &mask));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_ZMM1, destination));
+        TEST_CHECK(memcmp(destination, expected, sizeof(expected)) == 0);
+        OK(uc_close(uc));
+    }
+
+    {
+        static const uint8_t code[] = {
+            0x62, 0xf2, 0x7d, 0x4a, 0x8b, 0x10,
+        };
+        uint8_t source[64];
+        uint8_t observed[64];
+        uint64_t mask = 0;
+        uint64_t rax = UINT64_C(0x0000800000000000);
+        uc_engine *uc;
+
+        for (size_t byte = 0; byte < 64; ++byte) {
+            source[byte] = (uint8_t)(0x53 + byte * 17);
+        }
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                            code, sizeof(code));
+        OK(uc_reg_write(uc, UC_X86_REG_ZMM2, source));
+        OK(uc_reg_write(uc, UC_X86_REG_K2, &mask));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_ZMM2, observed));
+        TEST_CHECK(memcmp(observed, source, sizeof(source)) == 0);
+        OK(uc_close(uc));
+    }
+
+    /* Active non-canonical accesses select the exception from the default
+     * segment without committing vector or memory state. */
+    {
+        static const struct {
+            uint8_t code[7];
+            size_t code_size;
+            uc_x86_reg base_reg;
+            uc_x86_reg vector_reg;
+            uint32_t expected_interrupt;
+            const char *description;
+        } cases[] = {
+            {{0x62, 0xf2, 0x7d, 0x49, 0x89, 0x08},
+             6,
+             UC_X86_REG_RAX,
+             UC_X86_REG_ZMM1,
+             13,
+             "ordinary-base expand #GP"},
+            {{0x62, 0xf2, 0x7d, 0x49, 0x8b, 0x55, 0x00},
+             7,
+             UC_X86_REG_RBP,
+             UC_X86_REG_ZMM2,
+             12,
+             "stack-base compress #SS"},
+        };
+        const uint64_t noncanonical = UINT64_C(0x0000800000000000);
+
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            uint8_t initial_vector[64];
+            uint8_t observed_vector[64];
+            uint8_t initial_memory[64];
+            uint8_t observed_memory[64];
+            uint64_t mask = 1;
+            uint64_t base = noncanonical;
+            uint64_t rip = UINT64_MAX;
+            TestX86InterruptRecord record = {0};
+            uc_engine *uc;
+            uc_hook hook;
+
+            for (size_t byte = 0; byte < 64; ++byte) {
+                initial_vector[byte] = (uint8_t)(0x43 + byte * 19);
+                initial_memory[byte] = (uint8_t)(0xb7 - byte * 11);
+            }
+            uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                                cases[i].code, cases[i].code_size);
+            OK(uc_mem_map(uc, noncanonical, 0x1000, UC_PROT_ALL));
+            OK(uc_mem_write(uc, noncanonical, initial_memory,
+                            sizeof(initial_memory)));
+            OK(uc_reg_write(uc, cases[i].vector_reg, initial_vector));
+            OK(uc_reg_write(uc, UC_X86_REG_K1, &mask));
+            OK(uc_reg_write(uc, cases[i].base_reg, &base));
+            OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_x86_record_interrupt,
+                           &record, 1, 0));
+
+            OK(uc_emu_start(uc, code_start, code_start + cases[i].code_size, 0,
+                            0));
+            OK(uc_reg_read(uc, cases[i].vector_reg, observed_vector));
+            OK(uc_mem_read(uc, noncanonical, observed_memory,
+                           sizeof(observed_memory)));
+            OK(uc_reg_read(uc, cases[i].base_reg, &base));
+            OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+
+            TEST_CHECK_(record.count == 1 &&
+                            record.intno == cases[i].expected_interrupt,
+                        "%s selected interrupt %u", cases[i].description,
+                        record.intno);
+            TEST_CHECK_(memcmp(observed_vector, initial_vector,
+                               sizeof(initial_vector)) == 0,
+                        "%s changed vector state", cases[i].description);
+            TEST_CHECK_(memcmp(observed_memory, initial_memory,
+                               sizeof(initial_memory)) == 0,
+                        "%s changed memory", cases[i].description);
+            TEST_CHECK_(base == noncanonical, "%s changed its base register",
+                        cases[i].description);
+            TEST_CHECK_(rip == code_start, "%s advanced RIP",
+                        cases[i].description);
+            OK(uc_hook_del(uc, hook));
+            OK(uc_close(uc));
+        }
+    }
+
+    /* Expand commits no destination state if a later compact load faults. */
+    {
+        static const uint8_t code[] = {
+            0x62, 0xf2, 0x7d, 0xcf, 0x89, 0x08,
+        };
+        const uint64_t page = UINT64_C(0x8000);
+        const uint64_t data_address = page + 0x1000 - 4;
+        const uint32_t first = UINT32_C(0x10203040);
+        uint8_t initial[64];
+        uint8_t destination[64];
+        uint64_t mask = 5;
+        uint64_t rax = data_address;
+        uint64_t rip = 0;
+        uc_engine *uc;
+        uc_err err;
+
+        for (size_t byte = 0; byte < 64; ++byte) {
+            initial[byte] = (uint8_t)(0x61 + byte * 11);
+        }
+        memcpy(destination, initial, sizeof(destination));
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                            code, sizeof(code));
+        OK(uc_mem_map(uc, page, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+        OK(uc_mem_write(uc, data_address, &first, sizeof(first)));
+        OK(uc_reg_write(uc, UC_X86_REG_ZMM1, destination));
+        OK(uc_reg_write(uc, UC_X86_REG_K7, &mask));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        err = uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0);
+        TEST_CHECK(err == UC_ERR_READ_UNMAPPED);
+        OK(uc_reg_read(uc, UC_X86_REG_ZMM1, destination));
+        OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+        TEST_CHECK(memcmp(destination, initial, sizeof(initial)) == 0);
+        TEST_CHECK(rip == code_start);
+        OK(uc_close(uc));
+    }
+
+    /* Compress keeps earlier compact stores when a later store faults. */
+    {
+        static const uint8_t code[] = {
+            0x62, 0xf2, 0x7d, 0x4f, 0x8b, 0x10,
+        };
+        const uint64_t page = UINT64_C(0x8000);
+        const uint64_t data_address = page + 0x1000 - 4;
+        uint32_t source[16];
+        uint32_t first = UINT32_C(0xdeadbeef);
+        uint64_t mask = 5;
+        uint64_t rax = data_address;
+        uint64_t rip = 0;
+        uc_engine *uc;
+        uc_err err;
+
+        for (size_t lane = 0; lane < 16; ++lane) {
+            source[lane] = UINT32_C(0x10000000) + (uint32_t)lane;
+        }
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_ICELAKE_SERVER,
+                            code, sizeof(code));
+        OK(uc_mem_map(uc, page, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+        OK(uc_mem_write(uc, data_address, &first, sizeof(first)));
+        OK(uc_reg_write(uc, UC_X86_REG_ZMM2, source));
+        OK(uc_reg_write(uc, UC_X86_REG_K7, &mask));
+        OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+        err = uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0);
+        TEST_CHECK(err == UC_ERR_WRITE_UNMAPPED);
+        OK(uc_mem_read(uc, data_address, &first, sizeof(first)));
+        OK(uc_reg_read(uc, UC_X86_REG_RIP, &rip));
+        TEST_CHECK(first == source[0]);
+        TEST_CHECK(rip == code_start);
+        OK(uc_close(uc));
     }
 }
 
@@ -14752,11 +15218,6 @@ static void test_x86_xsave_roundtrips_ymmh(void)
     OK(uc_close(uc));
 }
 
-typedef struct TestX86InterruptRecord {
-    uint32_t intno;
-    uint32_t count;
-} TestX86InterruptRecord;
-
 static void test_x86_record_interrupt(uc_engine *uc, uint32_t intno,
                                       void *user_data)
 {
@@ -17997,6 +18458,8 @@ TEST_LIST = {
      test_x86_evex_vpcmp_invalid_forms},
     {"test_x86_evex_compress_expand_register_forms",
      test_x86_evex_compress_expand_register_forms},
+    {"test_x86_evex_compress_expand_memory_forms",
+     test_x86_evex_compress_expand_memory_forms},
     {"test_x86_apx_evex_alu_register_semantics",
      test_x86_apx_evex_alu_register_semantics},
     {"test_x86_apx_ccmp_ctest_register_semantics",

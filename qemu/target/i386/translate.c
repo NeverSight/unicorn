@@ -9312,6 +9312,9 @@ static bool gen_apx_evex_cmovcc(CPUX86State *env, DisasContext *s,
 static int apx_evex_reg_field(int p0, int modrm);
 static int apx_evex_rm_field(int p0, int modrm);
 static int evex_vector_rm_field(int p0, int modrm);
+static bool gen_evex_memory_address_details(
+    CPUX86State *env, DisasContext *s, int p0, int p1, int modrm,
+    int disp8_scale, bool *uses_egpr);
 static bool gen_evex_memory_address(CPUX86State *env, DisasContext *s,
                                     int p0, int p1, int modrm,
                                     int disp8_scale, int mask_reg,
@@ -11563,10 +11566,9 @@ static bool gen_evex_compress_expand_reg(CPUX86State *env, DisasContext *s,
         required_ebx = CPUID_7_0_EBX_AVX512VL;
     }
     modrm = x86_ldub_code(env, s);
-    /* Memory forms use Tuple1-scalar displacement scaling and dynamic fault
-     * suppression.  Keep them #UD until a dedicated memory helper provides
-     * both contracts. */
-    if ((modrm >> 6) != 3) {
+    /* Complete VBMI2 is not advertised to TCG guests, so keep its memory
+     * forms fail-closed. */
+    if ((modrm >> 6) != 3 && (opcode == 0x62 || opcode == 0x63)) {
         return false;
     }
     if ((s->cpuid_7_0_ebx_features & required_ebx) != required_ebx ||
@@ -11582,6 +11584,35 @@ static bool gen_evex_compress_expand_reg(CPUX86State *env, DisasContext *s,
     if (!(p0 & 0x10)) {
         reg |= 16;
     }
+
+    if ((modrm >> 6) != 3) {
+        bool stack_segment;
+        bool uses_egpr;
+        uint32_t desc;
+
+        /* EVEX.z is reserved when compress writes memory. */
+        if (!expand && zero) {
+            return false;
+        }
+        stack_segment = gen_evex_memory_address_details(
+            env, s, p0, p1, modrm, 1 << element_shift, &uses_egpr);
+        if (uses_egpr && (!CODE64(s) || !apx_f_enabled(s))) {
+            gen_illegal_opcode(s);
+            return true;
+        }
+        desc = evex_compress_expand_desc(
+            expand ? reg : 0, expand ? 0 : reg, element_shift,
+            vector_length, mask_reg, zero, expand);
+        if (stack_segment) {
+            desc |= EVEX_CE_STACK;
+        }
+        gen_helper_evex_compress_expand_mem(
+            tcg_ctx, tcg_ctx->cpu_env, s->A0,
+            tcg_const_i32(tcg_ctx, desc),
+            tcg_const_tl(tcg_ctx, s->pc_start - s->cs_base));
+        return true;
+    }
+
     rm = modrm & 7;
     if (!(p0 & 0x20)) {
         rm |= 8;
