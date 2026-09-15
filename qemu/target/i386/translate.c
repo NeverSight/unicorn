@@ -2798,8 +2798,10 @@ static void gen_enter(DisasContext *s, int esp_addend, int level)
         gen_op_st_v(s, d_ot, s->T1, s->A0);
     }
 
-    /* Copy the FrameTemp value to EBP.  */
-    gen_op_mov_reg_v(s, a_ot, R_EBP, s->T1);
+    /* Copy the FrameTemp value to BP/EBP/RBP at operand size.  A 16-bit
+     * ENTER in long mode writes BP only; using the stack-address size here
+     * clobbered RBP's high half and disagreed with the host CPU.  */
+    gen_op_mov_reg_v(s, d_ot, R_EBP, s->T1);
 
     /* Compute the final value of ESP.  */
     tcg_gen_subi_tl(tcg_ctx, s->T1, s->T1, esp_addend + size * level);
