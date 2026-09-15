@@ -111,8 +111,8 @@ struct uc_struct;
 #include "sysemu/os-win32.h"
 #endif
 
-#ifdef CONFIG_POSIX
-#include "sys/mman.h"
+#ifndef _WIN32
+#include <sys/mman.h>
 #endif
 
 /*

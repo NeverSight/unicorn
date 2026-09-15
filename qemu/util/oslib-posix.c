@@ -29,11 +29,19 @@
 #include <uc_priv.h>
 #include "qemu/osdep.h"
 
+#ifndef _WIN32
+#include <malloc.h>
+#endif
+
 #ifdef CONFIG_LINUX
 #include <linux/mman.h>
 #else  /* !CONFIG_LINUX */
+#ifndef MAP_SYNC
 #define MAP_SYNC              0x0
+#endif
+#ifndef MAP_SHARED_VALIDATE
 #define MAP_SHARED_VALIDATE   0x0
+#endif
 #endif /* CONFIG_LINUX */
 
 #ifndef __MINGW32__
