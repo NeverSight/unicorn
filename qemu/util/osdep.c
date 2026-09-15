@@ -23,6 +23,10 @@
  */
 #include "qemu/osdep.h"
 
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
+
 /* Needed early for CONFIG_BSD etc. */
 
 #ifdef CONFIG_SOLARIS
