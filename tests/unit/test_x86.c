@@ -15220,6 +15220,40 @@ static void test_x86_mxcsr_tracks_simd_exceptions(void)
     }
 }
 
+/* NeverD contributors, 2026-09-30: preserve SSE denormal status and its
+ * priority relative to NaN, divide-by-zero and negative square root. */
+static void test_x86_sse_denormal_status(void)
+{
+    static const struct {
+        uint8_t opcode;
+        uint32_t lhs, rhs, flags;
+    } cases[] = {
+        {0x58, 1, 0x3f800000, 0x22},
+        {0x58, 1, 0x7fc00011, 0},
+        {0x58, 1, 0x7f800011, 1},
+        {0x5e, 1, 0, 4},
+        {0x51, 0x3f800000, 1, 0x22},
+        {0x51, 0x3f800000, 0x80000001, 1},
+        {0x5d, 1, 0x3f800000, 2},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const uint8_t code[] = {0xf3, 0x0f, cases[i].opcode, 0xc1};
+        uint32_t xmm0[4] = {cases[i].lhs, 0, 0, 0};
+        uint32_t xmm1[4] = {cases[i].rhs, 0, 0, 0};
+        uint32_t mxcsr = 0x1f80;
+        uc_engine *uc;
+        uc_common_setup(&uc, UC_ARCH_X86, UC_MODE_64,
+                        (const char *)code, sizeof(code));
+        OK(uc_reg_write(uc, UC_X86_REG_MXCSR, &mxcsr));
+        OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0));
+        OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_X86_REG_MXCSR, &mxcsr));
+        TEST_CHECK((mxcsr & 0x3f) == cases[i].flags);
+        OK(uc_close(uc));
+    }
+}
+
 static void test_x86_xsave_roundtrips_ymmh(void)
 {
     const uint8_t code[] = {
@@ -18783,6 +18817,7 @@ TEST_LIST = {
      test_x86_vex128_special_forms_clear_upper_vector_state},
     {"test_x86_gather_rejects_overlapping_operands",
      test_x86_gather_rejects_overlapping_operands},
+    {"test_x86_sse_denormal_status", test_x86_sse_denormal_status},
     {"test_x86_mxcsr_tracks_simd_exceptions",
      test_x86_mxcsr_tracks_simd_exceptions},
     {"test_x86_mov_ss_rejects_null_selector_rpl_mismatch",
