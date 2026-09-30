@@ -424,6 +424,12 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         }
 
         cpu->exception_index = -1;
+#if defined(TARGET_X86_64)
+        /* NeverD contributors, 2026-09-30: a hook-delivered exception is
+         * acknowledged just like native IDT delivery. Do not retain it as
+         * an exception in flight when the caller resumes guest execution. */
+        env->old_exception = cpu->exception_index;
+#endif
     }
 
     *ret = EXCP_INTERRUPT;
