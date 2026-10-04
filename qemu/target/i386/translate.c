@@ -8102,7 +8102,8 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     /* Most sse scalar operations.  */
                     if (b1 == 2) {
                         sz = 2;
-                    } else if (b1 == 3) {
+                    } else if (b1 == 3 || sse_fn_epp == gen_helper_cvtps2pd) {
+                        /* Packed widening consumes only two single values. */
                         sz = 3;
                     }
                     break;
