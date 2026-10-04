@@ -1,0 +1,47 @@
+/* Independently authored bounded-execution fixtures. */
+#ifdef UC_COUNT_VALUE
+UC_COUNT_VALUE(PageSize, 4096)
+UC_COUNT_VALUE(Code, 0x10000)
+UC_COUNT_VALUE(Timeout, 1000000)
+UC_COUNT_VALUE(PatchValue, 22)
+UC_COUNT_VALUE(PatchOffset, 3)
+UC_COUNT_VALUE(StoreSize, 2)
+#endif
+#ifdef UC_COUNT_CODE
+UC_COUNT_CODE(NopX64, 0x90)
+UC_COUNT_CODE(NopARM, 0x00, 0xf0, 0x20, 0xe3)
+UC_COUNT_CODE(NopARM64, 0x1f, 0x20, 0x03, 0xd5)
+/* Relative branches from the end of the mapped page to the next page. */
+UC_COUNT_CODE(JumpX64, 0xeb, 0x00)
+UC_COUNT_CODE(JumpARM, 0xff, 0xff, 0xff, 0xea)
+UC_COUNT_CODE(JumpARM64, 0x01, 0x00, 0x00, 0x14)
+UC_COUNT_CODE(LoopX64, 0xeb, 0xfe)
+UC_COUNT_CODE(LoopARM, 0xfe, 0xff, 0xff, 0xea)
+UC_COUNT_CODE(LoopARM64, 0x00, 0x00, 0x00, 0x14)
+/* Load from an unmapped zero address held in RCX/R1/X1. */
+UC_COUNT_CODE(LoadX64, 0x48, 0x8b, 0x01)
+UC_COUNT_CODE(LoadARM, 0x00, 0x00, 0x91, 0xe5)
+UC_COUNT_CODE(LoadARM64, 0x20, 0x00, 0x40, 0xf9)
+/* mov [rcx], edx; mov eax, 11; nop */
+UC_COUNT_CODE(RewriteX64, 0x89, 0x11, 0xb8, 0x0b, 0, 0, 0, 0x90)
+#endif
+#ifdef UC_COUNT_ARCH
+#ifdef UNICORN_HAS_X86
+UC_COUNT_ARCH(X64, UC_ARCH_X86, UC_MODE_64, UC_X86_REG_RIP)
+#endif
+#ifdef UNICORN_HAS_ARM
+UC_COUNT_ARCH(ARM, UC_ARCH_ARM, UC_MODE_ARM, UC_ARM_REG_PC)
+#endif
+#ifdef UNICORN_HAS_ARM64
+UC_COUNT_ARCH(ARM64, UC_ARCH_ARM64, UC_MODE_ARM, UC_ARM64_REG_PC)
+#endif
+#endif
+#ifdef UC_COUNT_TEST
+UC_COUNT_TEST(page_tail_stops_before_successor_fetch)
+UC_COUNT_TEST(branch_to_unmapped_page_commits_before_fetch)
+UC_COUNT_TEST(self_branch_stops_with_an_unchanged_pc)
+UC_COUNT_TEST(first_instruction_fault_is_not_suppressed)
+#ifdef UNICORN_HAS_X86
+UC_COUNT_TEST(code_store_is_not_counted_again_before_commit)
+#endif
+#endif
