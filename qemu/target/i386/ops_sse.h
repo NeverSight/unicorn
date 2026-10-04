@@ -1490,25 +1490,33 @@ void helper_addsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 #define SSE_HELPER_CMP(name, F)                                         \
     void helper_ ## name ## ps(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal32(d->ZMM_S(0), s->ZMM_S(0), env);         \
         d->ZMM_L(0) = F(32, d->ZMM_S(0), s->ZMM_S(0));                  \
+        sse_denormal32(d->ZMM_S(1), s->ZMM_S(1), env);         \
         d->ZMM_L(1) = F(32, d->ZMM_S(1), s->ZMM_S(1));                  \
+        sse_denormal32(d->ZMM_S(2), s->ZMM_S(2), env);         \
         d->ZMM_L(2) = F(32, d->ZMM_S(2), s->ZMM_S(2));                  \
+        sse_denormal32(d->ZMM_S(3), s->ZMM_S(3), env);         \
         d->ZMM_L(3) = F(32, d->ZMM_S(3), s->ZMM_S(3));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## ss(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal32(d->ZMM_S(0), s->ZMM_S(0), env);         \
         d->ZMM_L(0) = F(32, d->ZMM_S(0), s->ZMM_S(0));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## pd(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal64(d->ZMM_D(0), s->ZMM_D(0), env);         \
         d->ZMM_Q(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
+        sse_denormal64(d->ZMM_D(1), s->ZMM_D(1), env);         \
         d->ZMM_Q(1) = F(64, d->ZMM_D(1), s->ZMM_D(1));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## sd(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal64(d->ZMM_D(0), s->ZMM_D(0), env);         \
         d->ZMM_Q(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
     }
 
