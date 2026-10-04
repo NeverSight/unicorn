@@ -1,0 +1,5 @@
+/* EVEX encoding fields; register U is fixed without AVX10.2 support.
+ * Added by NeverD contributors, 2026-10-04. */
+X86_EVEX_ENCODING(UMask, 0x04)
+X86_EVEX_ENCODING(ModMask, 0xc0)
+X86_EVEX_ENCODING(RegisterMod, 0xc0)

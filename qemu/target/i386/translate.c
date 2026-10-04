@@ -32,6 +32,14 @@
 #include "unicorn/platform.h"
 #include "uc_priv.h"
 
+/* NeverD modification, 2026-10-04: retain the register-form EVEX U bit.
+ * APX reuses it as X4 only for memory operands; AVX10.2 is not modeled. */
+enum {
+#define X86_EVEX_ENCODING(Name, Value) X86Evex##Name = Value,
+#include "evex-prefix.def"
+#undef X86_EVEX_ENCODING
+};
+
 #define PREFIX_REPZ   0x01
 #define PREFIX_REPNZ  0x02
 #define PREFIX_LOCK   0x04
@@ -13341,6 +13349,14 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
         return true;
     }
 
+    /* U is not an ignored X4 for ModRM.Mod = 3.  Reject that reserved
+     * encoding before any SIMD owner can publish register effects. */
+    if (!(p1 & X86EvexUMask) &&
+        (translator_ldub(tcg_ctx, env, operand_pc) & X86EvexModMask) ==
+            X86EvexRegisterMod) {
+        return false;
+    }
+
 #ifdef TARGET_X86_64
     if (CODE64(s) && !rex_byte &&
         !(s->prefix &
@@ -13414,7 +13430,7 @@ static bool gen_evex_instruction(CPUX86State *env, DisasContext *s,
     /* EVEX cannot be combined with REX, LOCK, operand-size or REP prefixes.
      * P0[2] remains fixed.  APX promotes P0.B4 and P1.X4 only when an
      * existing EVEX form actually consumes the corresponding GPR address or
-     * scalar field; otherwise those bits are architecturally ignored. */
+     * scalar field; unused B4 and memory-form X4 are ignored. */
     if (rex_byte ||
         (s->prefix &
          (PREFIX_LOCK | PREFIX_DATA | PREFIX_REPZ | PREFIX_REPNZ)) ||

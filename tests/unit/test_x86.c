@@ -8582,12 +8582,10 @@ static void test_x86_evex_feature_and_xstate_gates(void)
             bool rip_relative;
             const char *name;
         } ignored_cases[] = {
-            {{0x62, 0xf9, 0x70, 0x48, 0x58, 0xc2}, 6, false, false,
-             "register B4/X4"},
-            {{0x62, 0xf1, 0x70, 0x48, 0x58, 0x00}, 6, true, false,
-             "unused X4 without SIB"},
-            {{0x62, 0xf9, 0x74, 0x48, 0x58, 0x05, 0, 0, 0, 0}, 10,
-             true, true, "unused B4 with RIP-relative addressing"},
+#define UC_DECODE_IGNORED(Name, Size, Memory, Rip, ...) \
+    {{__VA_ARGS__}, Size, Memory, Rip, #Name},
+#include "x86_decode_boundaries.def"
+#undef UC_DECODE_IGNORED
         };
 
         for (size_t i = 0;
@@ -8634,8 +8632,10 @@ static void test_x86_evex_feature_and_xstate_gates(void)
 
         {
             static const uint8_t broadcast[] = {
-                0x62, 0xfa, 0x79, 0x48, 0x58, 0xc1,
-            }; /* vpbroadcastd zmm0, xmm1 with unused B4/X4 */
+#define UC_DECODE_BROADCAST(...) __VA_ARGS__,
+#include "x86_decode_boundaries.def"
+#undef UC_DECODE_BROADCAST
+            }; /* vpbroadcastd zmm0, xmm1 with unused B4 */
             uint32_t source[16] = {UINT32_C(0x12345678)};
             uint32_t observed[16];
             uc_engine *uc;
@@ -14247,10 +14247,11 @@ static void test_x86_round_scalar_memory_access_width(void)
         0xc4, 0xe3, 0x71, 0x0b, 0x00, 0x00,
         /* vroundsd xmm0, xmm1, qword ptr [rax], 0 */
     };
-    static const uint8_t roundps[] = {
-        0x66, 0x0f, 0x3a, 0x08, 0x00, 0x00,
-        /* roundps xmm0, xmmword ptr [rax], 0 */
-    };
+    /* NeverD correction, 2026-10-04: the unaligned packed control must
+     * use VEX; legacy ROUNDPS raises #GP before the missing-page access. */
+#define UC_DECODE_ROUND(Name, ...) static const uint8_t Name[] = {__VA_ARGS__};
+#include "x86_decode_boundaries.def"
+#undef UC_DECODE_ROUND
     static const struct {
         const uint8_t *code;
         size_t size;
@@ -14330,15 +14331,15 @@ static void test_x86_round_scalar_memory_access_width(void)
         const uint64_t data_address = data_page + 0xffc;
         uc_engine *uc;
 
-        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_HASWELL, roundps,
-                            sizeof(roundps));
+        uc_common_setup_cpu(&uc, UC_MODE_64, UC_CPU_X86_HASWELL, VRoundPS,
+                            sizeof(VRoundPS));
         OK(uc_mem_map(uc, data_page, 0x1000, UC_PROT_ALL));
         OK(uc_mem_write(uc, data_address, &single_input,
                         sizeof(single_input)));
         OK(uc_reg_write(uc, UC_X86_REG_RAX, &data_address));
         uc_assert_err(UC_ERR_READ_UNMAPPED,
                       uc_emu_start(uc, code_start,
-                                   code_start + sizeof(roundps), 0, 0));
+                                   code_start + sizeof(VRoundPS), 0, 0));
         OK(uc_close(uc));
     }
 }
