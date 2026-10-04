@@ -1063,24 +1063,30 @@ void helper_cvtps2pd(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = s->ZMM_S(0);
     s1 = s->ZMM_S(1);
+    sse_denormal32(s0, s0, env);
     d->ZMM_D(0) = float32_to_float64(s0, &env->sse_status);
+    sse_denormal32(s1, s1, env);
     d->ZMM_D(1) = float32_to_float64(s1, &env->sse_status);
 }
 
 void helper_cvtpd2ps(CPUX86State *env, Reg *d, Reg *s)
 {
+    sse_denormal64(s->ZMM_D(0), s->ZMM_D(0), env);
     d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
+    sse_denormal64(s->ZMM_D(1), s->ZMM_D(1), env);
     d->ZMM_S(1) = float64_to_float32(s->ZMM_D(1), &env->sse_status);
     d->Q(1) = 0;
 }
 
 void helper_cvtss2sd(CPUX86State *env, Reg *d, Reg *s)
 {
+    sse_denormal32(s->ZMM_S(0), s->ZMM_S(0), env);
     d->ZMM_D(0) = float32_to_float64(s->ZMM_S(0), &env->sse_status);
 }
 
 void helper_cvtsd2ss(CPUX86State *env, Reg *d, Reg *s)
 {
+    sse_denormal64(s->ZMM_D(0), s->ZMM_D(0), env);
     d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
 }
 
