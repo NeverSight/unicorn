@@ -8102,8 +8102,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     /* Most sse scalar operations.  */
                     if (b1 == 2) {
                         sz = 2;
-                    } else if (b1 == 3 || sse_fn_epp == gen_helper_cvtps2pd) {
-                        /* Packed widening consumes only two single values. */
+                    } else if (b1 == 3) {
                         sz = 3;
                     }
                     break;
@@ -8116,6 +8115,13 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                         sz = 3;
                     }
                     break;
+                }
+
+                /* Both packed widening helpers consume two 32-bit lanes.
+                 * Prefixes alone cannot identify the integer m64 form. */
+                if (sse_fn_epp == gen_helper_cvtps2pd ||
+                    sse_fn_epp == gen_helper_cvtdq2pd) {
+                    sz = 3;
                 }
 
                 switch (sz) {
