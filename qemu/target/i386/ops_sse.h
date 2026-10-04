@@ -907,12 +907,18 @@ static void sse_denormal64(float64 a, float64 b, CPUX86State *env)
  * special cases right: for min and max Intel specifies that (-0,0),
  * (NaN, anything) and (anything, NaN) return the second argument.
  */
-#define FPU_MIN(size, a, b)                                     \
-    (sse_denormal ## size(a, b, env), \
-     float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
-#define FPU_MAX(size, a, b)                                     \
-    (sse_denormal ## size(a, b, env), \
-     float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
+/* NeverD contributors, 2026-10-04: comparisons already apply DAZ, but the
+ * selected raw payload must also become a signed zero when it is denormal. */
+#define FPU_MIN(size, a, b)                                                    \
+    (sse_denormal##size(a, b, env),                                            \
+     float##size##_squash_input_denormal(                                      \
+         float##size##_lt(a, b, &env->sse_status) ? (a) : (b),                 \
+         &env->sse_status))
+#define FPU_MAX(size, a, b)                                                    \
+    (sse_denormal##size(a, b, env),                                            \
+     float##size##_squash_input_denormal(                                      \
+         float##size##_lt(b, a, &env->sse_status) ? (a) : (b),                 \
+         &env->sse_status))
 
 SSE_HELPER_S(add, FPU_ADD)
 SSE_HELPER_S(sub, FPU_SUB)
