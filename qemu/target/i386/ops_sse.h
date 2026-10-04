@@ -1069,12 +1069,38 @@ void helper_cvtps2pd(CPUX86State *env, Reg *d, Reg *s)
     d->ZMM_D(1) = float32_to_float64(s1, &env->sse_status);
 }
 
+/* x86 FTZ tests tininess after precision rounding with an unbounded exponent.
+ * SoftFloat's direct FTZ branch flushes before this rounding. A gradual
+ * conversion instead exposes per-lane underflow and exact denormal results;
+ * their union is the x86 flush condition. Isolate new flags so a previous lane
+ * or instruction cannot flush a normal result. */
+static float32 sse_narrow64(float64 value, CPUX86State *env)
+{
+    float_status status;
+    float32 result;
+    int flags;
+
+    sse_denormal64(value, value, env);
+    if (!get_flush_to_zero(&env->sse_status)) {
+        return float64_to_float32(value, &env->sse_status);
+    }
+    status = env->sse_status;
+    set_flush_to_zero(false, &status);
+    set_float_exception_flags(0, &status);
+    result = float64_to_float32(value, &status);
+    flags = get_float_exception_flags(&status);
+    if ((flags & float_flag_underflow) || float32_is_denormal(result)) {
+        result = float32_set_sign(float32_zero, float64_is_neg(value));
+        flags |= float_flag_output_denormal;
+    }
+    float_raise(flags, &env->sse_status);
+    return result;
+}
+
 void helper_cvtpd2ps(CPUX86State *env, Reg *d, Reg *s)
 {
-    sse_denormal64(s->ZMM_D(0), s->ZMM_D(0), env);
-    d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
-    sse_denormal64(s->ZMM_D(1), s->ZMM_D(1), env);
-    d->ZMM_S(1) = float64_to_float32(s->ZMM_D(1), &env->sse_status);
+    d->ZMM_S(0) = sse_narrow64(s->ZMM_D(0), env);
+    d->ZMM_S(1) = sse_narrow64(s->ZMM_D(1), env);
     d->Q(1) = 0;
 }
 
@@ -1086,8 +1112,7 @@ void helper_cvtss2sd(CPUX86State *env, Reg *d, Reg *s)
 
 void helper_cvtsd2ss(CPUX86State *env, Reg *d, Reg *s)
 {
-    sse_denormal64(s->ZMM_D(0), s->ZMM_D(0), env);
-    d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
+    d->ZMM_S(0) = sse_narrow64(s->ZMM_D(0), env);
 }
 
 /* integer to float */
