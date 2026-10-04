@@ -102,6 +102,44 @@ static void first_instruction_fault_is_not_suppressed(void)
     }
 }
 
+#ifdef UNICORN_HAS_ARM64
+static void arm64_mmu_does_not_translate_the_successor(void)
+{
+    uc_engine *Engine = NULL;
+    TEST_ASSERT(uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &Engine) == UC_ERR_OK);
+    OK(uc_ctl_tlb_mode(Engine, UC_TLB_CPU));
+    OK(uc_mem_map(Engine, Code, PageSize, UC_PROT_ALL));
+    OK(uc_mem_map(Engine, Tables, TableLevels * PageSize, UC_PROT_ALL));
+    for (unsigned Level = 0; Level + 1 < TableLevels; ++Level) {
+        uint64_t Entry =
+            LEINT64((Tables + (Level + 1) * PageSize) | TableDescriptor);
+        OK(uc_mem_write(Engine, Tables + Level * PageSize, &Entry,
+                        sizeof(Entry)));
+    }
+    uint64_t Leaf = LEINT64(Code | PageDescriptor);
+    OK(uc_mem_write(Engine,
+                    Tables + (TableLevels - 1) * PageSize +
+                        (Code / PageSize) * sizeof(Leaf),
+                    &Leaf, sizeof(Leaf)));
+    const uint64_t Start = Code + PageSize - sizeof(NopARM64);
+    OK(uc_mem_write(Engine, Start, NopARM64, sizeof(NopARM64)));
+    uc_arm64_cp_reg Registers[] = {
+#define UC_COUNT_MMU_REGISTER(...) {__VA_ARGS__},
+#include "count_one_cases.def"
+#undef UC_COUNT_MMU_REGISTER
+    };
+    for (size_t I = 0; I < sizeof(Registers) / sizeof(Registers[0]); ++I)
+        OK(uc_reg_write(Engine, UC_ARM64_REG_CP_REG, &Registers[I]));
+    OK(uc_emu_start(Engine, Start, 0, Timeout, 1));
+    uint64_t PC = 0;
+    OK(uc_reg_read(Engine, UC_ARM64_REG_PC, &PC));
+    TEST_CHECK(PC == Code + PageSize);
+    /* The next entry still faults: stopping must not grant page access. */
+    uc_assert_err(UC_ERR_EXCEPTION, uc_emu_start(Engine, PC, 0, Timeout, 1));
+    OK(uc_close(Engine));
+}
+#endif
+
 #ifdef UNICORN_HAS_X86
 static void code_store_is_not_counted_again_before_commit(void)
 {

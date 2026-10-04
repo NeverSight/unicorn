@@ -6,6 +6,17 @@ UC_COUNT_VALUE(Timeout, 1000000)
 UC_COUNT_VALUE(PatchValue, 22)
 UC_COUNT_VALUE(PatchOffset, 3)
 UC_COUNT_VALUE(StoreSize, 2)
+UC_COUNT_VALUE(Tables, 0x1000)
+UC_COUNT_VALUE(TableLevels, 4)
+UC_COUNT_VALUE(TableDescriptor, 3)
+UC_COUNT_VALUE(PageDescriptor, 0x403)
+#endif
+#ifdef UC_COUNT_MMU_REGISTER
+/* CRn, CRm, op0, op1, op2, value. */
+UC_COUNT_MMU_REGISTER(2, 0, 3, 0, 0, Tables)
+UC_COUNT_MMU_REGISTER(2, 0, 3, 0, 2, 0x00100010)
+UC_COUNT_MMU_REGISTER(10, 2, 3, 0, 0, 0xff)
+UC_COUNT_MMU_REGISTER(1, 0, 3, 0, 0, 0x30d00801)
 #endif
 #ifdef UC_COUNT_CODE
 UC_COUNT_CODE(NopX64, 0x90)
@@ -41,6 +52,9 @@ UC_COUNT_TEST(page_tail_stops_before_successor_fetch)
 UC_COUNT_TEST(branch_to_unmapped_page_commits_before_fetch)
 UC_COUNT_TEST(self_branch_stops_with_an_unchanged_pc)
 UC_COUNT_TEST(first_instruction_fault_is_not_suppressed)
+#ifdef UNICORN_HAS_ARM64
+UC_COUNT_TEST(arm64_mmu_does_not_translate_the_successor)
+#endif
 #ifdef UNICORN_HAS_X86
 UC_COUNT_TEST(code_store_is_not_counted_again_before_commit)
 #endif
