@@ -1547,6 +1547,7 @@ void helper_ucomiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+    sse_denormal32(s0, s1, env);
     ret = float32_compare_quiet(s0, s1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1558,6 +1559,7 @@ void helper_comiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+    sse_denormal32(s0, s1, env);
     ret = float32_compare(s0, s1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1569,6 +1571,7 @@ void helper_ucomisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+    sse_denormal64(d0, d1, env);
     ret = float64_compare_quiet(d0, d1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1580,6 +1583,7 @@ void helper_comisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+    sse_denormal64(d0, d1, env);
     ret = float64_compare(d0, d1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
