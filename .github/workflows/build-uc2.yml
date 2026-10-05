@@ -136,7 +136,6 @@ jobs:
           install: >-
             mingw-w64-${{ matrix.config.mingw-arch }}-cmake
             mingw-w64-${{ matrix.config.mingw-arch }}-ninja
-            mingw-w64-${{ matrix.config.mingw-arch }}-cmocka
             mingw-w64-${{ matrix.config.mingw-arch }}-${{ matrix.compiler }}
             mingw-w64-${{ matrix.config.mingw-arch }}-toolchain
 
