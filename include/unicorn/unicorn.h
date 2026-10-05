@@ -721,9 +721,11 @@ See sample_ctl.c for a detailed example.
 #define uc_ctl_set_cpu_model(uc, model)                                        \
     uc_ctl(uc, UC_CTL_WRITE(UC_CTL_CPU_MODEL, 1), (model))
 #define uc_ctl_remove_cache(uc, address, end)                                  \
-    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_REMOVE_CACHE, 2), (address), (end))
+    uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_REMOVE_CACHE, 2), (uint64_t)(address),     \
+           (uint64_t)(end))
 #define uc_ctl_request_cache(uc, address, tb)                                  \
-    uc_ctl(uc, UC_CTL_READ_WRITE(UC_CTL_TB_REQUEST_CACHE, 2), (address), (tb))
+    uc_ctl(uc, UC_CTL_READ_WRITE(UC_CTL_TB_REQUEST_CACHE, 2),                    \
+           (uint64_t)(address), (tb))
 #define uc_ctl_flush_tb(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TB_FLUSH, 0))
 #define uc_ctl_flush_tlb(uc) uc_ctl(uc, UC_CTL_WRITE(UC_CTL_TLB_FLUSH, 0))
 #define uc_ctl_tlb_mode(uc, mode)                                              \

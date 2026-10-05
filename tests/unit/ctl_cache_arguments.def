@@ -1,0 +1,22 @@
+/* Original cache-control argument-width regression data, 2026-10-05.
+ * NeverD contributors; licensed under the Unicorn unit-test terms. */
+#ifdef UC_CACHE_ADDRESS
+UC_CACHE_ADDRESS(LowAddress, 0x1000)
+#endif
+#ifdef UC_CACHE_VALUE
+UC_CACHE_VALUE(PageSize, 4096)
+UC_CACHE_VALUE(FirstResult, 0x37)
+UC_CACHE_VALUE(SecondResult, 0x59)
+UC_CACHE_VALUE(ImmediateOffset, 1)
+UC_CACHE_VALUE(InstructionCount, 2)
+#endif
+#ifdef UC_CACHE_CODE
+/* mov eax, FirstResult; jmp to the end address. */
+UC_CACHE_CODE(0xb8, FirstResult, 0x00, 0x00, 0x00, 0xeb, 0x00)
+#endif
+#ifdef UC_CACHE_CASE
+UC_CACHE_CASE(EnumAddress, enum CacheAddress, LowAddress)
+UC_CACHE_CASE(UnsignedAddress, uint32_t, LowAddress)
+UC_CACHE_CASE(SizeAddress, size_t, LowAddress)
+UC_CACHE_CASE(WideAddress, uint64_t, UINT64_C(0x100001000))
+#endif
