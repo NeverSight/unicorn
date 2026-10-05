@@ -17491,6 +17491,13 @@ static bool gen_rex2_register(CPUX86State *env, DisasContext *s, int rex_byte)
 }
 #endif
 
+/* Intel ignores 66H for these relative branches in long mode. AMD keeps
+ * its 16-bit override; effective REX.W already determines dflag. */
+static bool relativeBranchIs16Bit(DisasContext *s, CPUX86State *env,
+                                 MemOp dflag) {
+  return dflag == MO_16 && (!CODE64(s) || !IS_INTEL_CPU(env));
+}
+
 /* convert one instruction. s->base.is_jmp is set if the translation must
    be stopped. Return the next pc value */
 static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
@@ -19990,13 +19997,13 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         }
         goto do_lcall;
     case 0xe9: /* jmp im */
-        if (dflag != MO_16) {
+        if (!relativeBranchIs16Bit(s, env, dflag)) {
             tval = (int32_t)insn_get(env, s, MO_32);
         } else {
             tval = (int16_t)insn_get(env, s, MO_16);
         }
         tval += s->pc - s->cs_base;
-        if (dflag == MO_16) {
+        if (relativeBranchIs16Bit(s, env, dflag)) {
             tval &= 0xffff;
         } else if (!CODE64(s)) {
             tval &= 0xffffffff;
@@ -20021,7 +20028,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0xeb: /* jmp Jb */
         tval = (int8_t)insn_get(env, s, MO_8);
         tval += s->pc - s->cs_base;
-        if (dflag == MO_16) {
+        if (relativeBranchIs16Bit(s, env, dflag)) {
             tval &= 0xffff;
         }
         gen_jmp(s, tval);
@@ -20060,7 +20067,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0x18d: /* jcc Jv */
     case 0x18e: /* jcc Jv */
     case 0x18f: /* jcc Jv */
-        if (dflag != MO_16) {
+        if (!relativeBranchIs16Bit(s, env, dflag)) {
             tval = (int32_t)insn_get(env, s, MO_32);
         } else {
             tval = (int16_t)insn_get(env, s, MO_16);
@@ -20068,7 +20075,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     do_jcc:
         next_eip = s->pc - s->cs_base;
         tval += next_eip;
-        if (dflag == MO_16) {
+        if (relativeBranchIs16Bit(s, env, dflag)) {
             tval &= 0xffff;
         }
         gen_bnd_jmp(s);
@@ -20698,9 +20705,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             tval = (int8_t)insn_get(env, s, MO_8);
             next_eip = s->pc - s->cs_base;
             tval += next_eip;
-            /* Intel ignores 66H here in long mode; AMD retains its
-             * documented 16-bit near-branch target override. */
-            if (dflag == MO_16 && (!CODE64(s) || !IS_INTEL_CPU(env))) {
+            if (relativeBranchIs16Bit(s, env, dflag)) {
                 tval &= 0xffff;
             }
 
