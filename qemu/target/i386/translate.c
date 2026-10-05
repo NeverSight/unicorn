@@ -20698,8 +20698,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             tval = (int8_t)insn_get(env, s, MO_8);
             next_eip = s->pc - s->cs_base;
             tval += next_eip;
-            /* In long mode, 66H does not narrow LOOP/JCXZ branch targets. */
-            if (!CODE64(s) && dflag == MO_16) {
+            /* Intel ignores 66H here in long mode; AMD retains its
+             * documented 16-bit near-branch target override. */
+            if (dflag == MO_16 && (!CODE64(s) || !IS_INTEL_CPU(env))) {
                 tval &= 0xffff;
             }
 

@@ -69,9 +69,10 @@ static uint64_t readRegister(uc_engine *Engine, uc_mode Mode, int Wide,
   return Word;
 }
 
-static void runCases(uc_mode Mode) {
+static void runCases(uc_mode Mode, bool Intel) {
   uc_engine *Engine = NULL;
   OK(uc_open(UC_ARCH_X86, Mode, &Engine));
+  OK(uc_ctl_set_cpu_model(Engine, Intel ? IntelModel : AMDModel));
   uint8_t Padding[Page];
   memset(Padding, Nop, sizeof(Padding));
   // Low memory holds a wrongly truncated target, so the failure is a precise
@@ -101,10 +102,11 @@ static void runCases(uc_mode Mode) {
               ? (Prefix->AddressOverride ? UINT32_MAX : UINT64_MAX)
           : (Mode == UC_MODE_16) != Prefix->AddressOverride ? UINT16_MAX
                                                             : UINT32_MAX;
-      // Operand size only narrows a taken legacy target. Long-mode short
-      // targets always retain RIP; 67H changes the counter independently.
+      // Intel long mode ignores 66H; AMD retains its 16-bit target override.
+      // 67H changes the counter independently on both processor models.
       const uint64_t TargetMask =
-          Mode == UC_MODE_64                                ? UINT64_MAX
+          Mode == UC_MODE_64
+              ? (!Intel && Prefix->OperandOverride ? UINT16_MAX : UINT64_MAX)
           : (Mode == UC_MODE_16) != Prefix->OperandOverride ? UINT16_MAX
                                                             : UINT32_MAX;
       for (size_t O = 0; O < sizeof(Operations) / sizeof(Operations[0]); ++O) {
@@ -183,9 +185,10 @@ static void runCases(uc_mode Mode) {
   }
   OK(uc_close(Engine));
 }
-static void longModeTargetsAndCounters(void) { runCases(UC_MODE_64); }
-static void legacy32TargetAndCounterWidths(void) { runCases(UC_MODE_32); }
-static void legacy16TargetAndCounterWidths(void) { runCases(UC_MODE_16); }
+static void longModeTargetsAndCounters(void) { runCases(UC_MODE_64, true); }
+static void amdLongModeOperandSizeTargets(void) { runCases(UC_MODE_64, false); }
+static void legacy32TargetAndCounterWidths(void) { runCases(UC_MODE_32, true); }
+static void legacy16TargetAndCounterWidths(void) { runCases(UC_MODE_16, true); }
 
 TEST_LIST = {
 #define UC_LOOP_TEST(Name, Function) {#Name, Function},
