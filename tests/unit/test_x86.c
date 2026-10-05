@@ -15981,7 +15981,7 @@ static void test_x86_sse_avx_nan_first_source(void)
     static const uint32_t snan_first[4] = {
         0xff800123U, 0, 0, 0,
     };
-    static const struct {
+    const struct {
         const char *name;
         const uint8_t *code;
         size_t code_size;
@@ -16395,7 +16395,7 @@ static void test_x86_amx_guest_cpuid_xstate_and_xsave(void)
     }
 
     {
-        static const struct {
+        const struct {
             uint64_t mask;
             bool valid;
             const char *description;
