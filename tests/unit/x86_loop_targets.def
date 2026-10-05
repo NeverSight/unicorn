@@ -7,9 +7,11 @@ UC_LOOP_VALUE(Code32, 0x10000)
 UC_LOOP_VALUE(EntryOffset, 1024)
 UC_LOOP_VALUE(Nop, 0x90)
 UC_LOOP_VALUE(InstructionBytes, 2)
-UC_LOOP_VALUE(MaxPrefixBytes, 2)
+UC_LOOP_VALUE(MaxPrefixBytes, 3)
 UC_LOOP_VALUE(OneInstruction, 1)
 UC_LOOP_VALUE(ZeroFlag, 0x40)
+UC_LOOP_VALUE(IntelModel, UC_CPU_X86_HASWELL)
+UC_LOOP_VALUE(AMDModel, UC_CPU_X86_PHENOM)
 #endif
 #ifdef UC_LOOP_WIDE_VALUE
 UC_LOOP_WIDE_VALUE(Code64, 0x100010000ULL)
@@ -37,6 +39,9 @@ UC_LOOP_PREFIX(2, true, true, false, 0x66, 0x67)
 UC_LOOP_PREFIX(1, false, false, true, 0x48, 0)
 UC_LOOP_PREFIX(1, false, false, true, 0x41, 0)
 UC_LOOP_PREFIX(2, true, false, true, 0x67, 0x48)
+// REX.W overrides 66H, including on the AMD model.
+UC_LOOP_PREFIX(2, false, false, true, 0x66, 0x48)
+UC_LOOP_PREFIX(3, true, false, true, 0x66, 0x67, 0x48)
 #endif
 #ifdef UC_LOOP_COUNT
 UC_LOOP_COUNT(0)
@@ -67,6 +72,7 @@ UC_LOOP_DISPLACEMENT(127)
 #endif
 #ifdef UC_LOOP_TEST
 UC_LOOP_TEST(LongModeTargetsAndCounters, longModeTargetsAndCounters)
+UC_LOOP_TEST(AMDLongModeOperandSizeTargets, amdLongModeOperandSizeTargets)
 UC_LOOP_TEST(Legacy32TargetAndCounterWidths, legacy32TargetAndCounterWidths)
 UC_LOOP_TEST(Legacy16TargetAndCounterWidths, legacy16TargetAndCounterWidths)
 #endif
