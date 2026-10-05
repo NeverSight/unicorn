@@ -40,6 +40,17 @@ enum {
 #undef X86_EVEX_ENCODING
 };
 
+/* NeverD modification, 2026-10-05: implicit AH does not use REX byte-register
+ * selection. Preserve the explicit operand decoder for SPL and R8B-R15B. */
+enum {
+#define X86_IMPLICIT_BYTE_REGISTER(Name, Slot, OffsetValue, WidthValue)        \
+    X86Implicit##Name##Register = Slot,                                        \
+    X86Implicit##Name##Offset = OffsetValue,                                   \
+    X86Implicit##Name##Width = WidthValue,
+#include "implicit-byte-registers.def"
+#undef X86_IMPLICIT_BYTE_REGISTER
+};
+
 #define PREFIX_REPZ   0x01
 #define PREFIX_REPNZ  0x02
 #define PREFIX_LOCK   0x04
@@ -20179,32 +20190,48 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             gen_eob(s);
         }
         break;
+    /* NeverD modification, 2026-10-05: LOCK is invalid for these flag-only
+     * instructions, including implicit AH transfers. Reject before effects. */
     case 0x9e: /* sahf */
+        if (s->prefix & PREFIX_LOCK)
+            goto illegal_op;
         if (CODE64(s) && !(s->cpuid_ext3_features & CPUID_EXT3_LAHF_LM))
             goto illegal_op;
-        gen_op_mov_v_reg(s, MO_8, s->T0, R_AH);
+        tcg_gen_extract_tl(tcg_ctx, s->T0,
+                           tcg_ctx->cpu_regs[X86ImplicitAHRegister],
+                           X86ImplicitAHOffset, X86ImplicitAHWidth);
         gen_compute_eflags(s);
         tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_cc_src, tcg_ctx->cpu_cc_src, CC_O);
         tcg_gen_andi_tl(tcg_ctx, s->T0, s->T0, CC_S | CC_Z | CC_A | CC_P | CC_C);
         tcg_gen_or_tl(tcg_ctx, tcg_ctx->cpu_cc_src, tcg_ctx->cpu_cc_src, s->T0);
         break;
     case 0x9f: /* lahf */
+        if (s->prefix & PREFIX_LOCK)
+            goto illegal_op;
         if (CODE64(s) && !(s->cpuid_ext3_features & CPUID_EXT3_LAHF_LM))
             goto illegal_op;
         gen_mov_eflags(s, s->T0);
         /* Note: gen_mov_eflags() only gives the condition codes */
         tcg_gen_ori_tl(tcg_ctx, s->T0, s->T0, 0x02);
-        gen_op_mov_reg_v(s, MO_8, R_AH, s->T0);
+        tcg_gen_deposit_tl(tcg_ctx, tcg_ctx->cpu_regs[X86ImplicitAHRegister],
+                           tcg_ctx->cpu_regs[X86ImplicitAHRegister], s->T0,
+                           X86ImplicitAHOffset, X86ImplicitAHWidth);
         break;
     case 0xf5: /* cmc */
+        if (s->prefix & PREFIX_LOCK)
+            goto illegal_op;
         gen_compute_eflags(s);
         tcg_gen_xori_tl(tcg_ctx, tcg_ctx->cpu_cc_src, tcg_ctx->cpu_cc_src, CC_C);
         break;
     case 0xf8: /* clc */
+        if (s->prefix & PREFIX_LOCK)
+            goto illegal_op;
         gen_compute_eflags(s);
         tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_cc_src, tcg_ctx->cpu_cc_src, ~CC_C);
         break;
     case 0xf9: /* stc */
+        if (s->prefix & PREFIX_LOCK)
+            goto illegal_op;
         gen_compute_eflags(s);
         tcg_gen_ori_tl(tcg_ctx, tcg_ctx->cpu_cc_src, tcg_ctx->cpu_cc_src, CC_C);
         break;

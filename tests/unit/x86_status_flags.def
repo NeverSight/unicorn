@@ -1,0 +1,74 @@
+/* Original implicit-byte-register regression data, 2026-10-05.
+ * NeverD contributors; licensed under the Unicorn unit-test terms. */
+#ifdef UC_STATUS_VALUE
+UC_STATUS_VALUE(Code, 0x1000)
+UC_STATUS_VALUE(Page, 4096)
+UC_STATUS_VALUE(Flags, 0xed7)
+UC_STATUS_VALUE(Reserved, 2)
+UC_STATUS_VALUE(StatusMask, 0xd5)
+UC_STATUS_VALUE(AHShift, 8)
+UC_STATUS_VALUE(AHMask, 0xff00)
+UC_STATUS_VALUE(LAHF, 0x9f)
+UC_STATUS_VALUE(SAHF, 0x9e)
+UC_STATUS_VALUE(CMC, 0xf5)
+UC_STATUS_VALUE(CLC, 0xf8)
+UC_STATUS_VALUE(STC, 0xf9)
+UC_STATUS_VALUE(Lock, 0xf0)
+UC_STATUS_VALUE(Immediate, 0xa5)
+UC_STATUS_VALUE(MaxPrefixBytes, 3)
+UC_STATUS_VALUE(ExplicitBytes, 3)
+UC_STATUS_VALUE(OneInstruction, 1)
+#endif
+#ifdef UC_STATUS_WIDE_VALUE
+UC_STATUS_WIDE_VALUE(SeedAX, 0x112233445566a588ULL)
+UC_STATUS_WIDE_VALUE(SeedSP, 0xaabbccddeeff21efULL)
+UC_STATUS_WIDE_VALUE(SeedR12, 0x123456789abcdef0ULL)
+#endif
+#ifdef UC_STATUS_TEXT
+UC_STATUS_TEXT(CaseContext, "mode=%u prefix=%zu opcode=%x input=%x")
+#endif
+#ifdef UC_STATUS_MODE
+UC_STATUS_MODE(UC_MODE_16, UC_X86_REG_AX, UC_X86_REG_SP, UC_X86_REG_IP, 0xffff)
+UC_STATUS_MODE(UC_MODE_32, UC_X86_REG_EAX, UC_X86_REG_ESP, UC_X86_REG_EIP,
+               0xffffffff)
+UC_STATUS_MODE(UC_MODE_64, UC_X86_REG_RAX, UC_X86_REG_RSP, UC_X86_REG_RIP,
+               UINT64_MAX)
+#endif
+#ifdef UC_STATUS_PREFIX
+UC_STATUS_PREFIX(0, 0, 0, 0)
+UC_STATUS_PREFIX(1, 0x66, 0, 0)
+UC_STATUS_PREFIX(1, 0x67, 0, 0)
+UC_STATUS_PREFIX(1, 0x64, 0, 0)
+UC_STATUS_PREFIX(1, 0x65, 0, 0)
+#endif
+#ifdef UC_STATUS_REX
+UC_STATUS_REX(1, 0x40, 0, 0)
+UC_STATUS_REX(1, 0x41, 0, 0)
+UC_STATUS_REX(1, 0x42, 0, 0)
+UC_STATUS_REX(1, 0x43, 0, 0)
+UC_STATUS_REX(1, 0x44, 0, 0)
+UC_STATUS_REX(1, 0x45, 0, 0)
+UC_STATUS_REX(1, 0x46, 0, 0)
+UC_STATUS_REX(1, 0x47, 0, 0)
+UC_STATUS_REX(1, 0x48, 0, 0)
+UC_STATUS_REX(1, 0x49, 0, 0)
+UC_STATUS_REX(1, 0x4a, 0, 0)
+UC_STATUS_REX(1, 0x4b, 0, 0)
+UC_STATUS_REX(1, 0x4c, 0, 0)
+UC_STATUS_REX(1, 0x4d, 0, 0)
+UC_STATUS_REX(1, 0x4e, 0, 0)
+UC_STATUS_REX(1, 0x4f, 0, 0)
+UC_STATUS_REX(2, 0x66, 0x4f, 0)
+UC_STATUS_REX(2, 0x4f, 0x66, 0)
+UC_STATUS_REX(3, 0x67, 0x64, 0x4f)
+#endif
+#ifdef UC_STATUS_EXPLICIT
+UC_STATUS_EXPLICIT(UC_X86_REG_RSP, 0x40, 0xb4, 0xa5)
+UC_STATUS_EXPLICIT(UC_X86_REG_R12, 0x41, 0xb4, 0xa5)
+#endif
+#ifdef UC_STATUS_TEST
+UC_STATUS_TEST(ImplicitAH, implicitAH)
+UC_STATUS_TEST(ExplicitREXRegisters, explicitREXRegisters)
+UC_STATUS_TEST(UnsupportedLongModeFeature, unsupportedLongModeFeature)
+UC_STATUS_TEST(LockedStatusInstructions, lockedStatusInstructions)
+#endif
