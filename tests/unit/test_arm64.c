@@ -2,6 +2,7 @@
 #include "unicorn/unicorn.h"
 #include "unicorn_test.h"
 #include <stdbool.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -944,7 +945,108 @@ static void test_arm64_pauth_ctl(void)
     OK(uc_close(uc));
 }
 
+enum Arm64AtomicKind {
+#define UC_ARM64_ATOMIC_KIND(Name) Arm64Atomic##Name,
+#include "arm64_atomic_cases.inc"
+#undef UC_ARM64_ATOMIC_KIND
+};
+
+static void test_arm64_atomic_minmax(void)
+{
+#define UC_ARM64_ATOMIC_VALUE(Name, Value) enum { Name = Value };
+#define UC_ARM64_ATOMIC_WIDE(Name, Value) const uint64_t Name = Value;
+#define UC_ARM64_ATOMIC_TEXT(Name, Value) const char Name[] = Value;
+#include "arm64_atomic_cases.inc"
+#undef UC_ARM64_ATOMIC_VALUE
+#undef UC_ARM64_ATOMIC_WIDE
+#undef UC_ARM64_ATOMIC_TEXT
+    static const struct {
+        const char *Name;
+        enum Arm64AtomicKind Kind;
+        unsigned Width;
+        uint32_t Word;
+    } Cases[] = {
+#define UC_ARM64_ATOMIC_CASE(Name, Kind, Width, Word)                          \
+    {#Name, Arm64Atomic##Kind, Width, Word},
+#include "arm64_atomic_cases.inc"
+#undef UC_ARM64_ATOMIC_CASE
+    };
+    static const struct {
+        unsigned Width;
+        uint64_t Before, Source, Expected[4];
+    } Inputs[] = {
+#define UC_ARM64_ATOMIC_INPUT(Width, Before, Source, SMin, SMax, UMin, UMax)   \
+    {Width, Before, Source, {SMin, SMax, UMin, UMax}},
+#include "arm64_atomic_cases.inc"
+#undef UC_ARM64_ATOMIC_INPUT
+    };
+    const unsigned Results[] = {0, ResultRegister, AddressRegister,
+                                RegisterMask};
+    for (unsigned C = 0; C < sizeof(Cases) / sizeof(Cases[0]); ++C) {
+        const unsigned Width = Cases[C].Width;
+        const uint64_t Mask = Width == sizeof(uint64_t)
+                                  ? UINT64_MAX
+                                  : (UINT64_C(1) << (Width * CHAR_BIT)) - 1;
+        for (unsigned R = 0; R < sizeof(Results) / sizeof(Results[0]); ++R) {
+            const unsigned Result = Results[R];
+            const uint32_t Word = (Cases[C].Word & ~RegisterMask) | Result;
+            unsigned char Code[InstructionBytes];
+            for (unsigned B = 0; B < sizeof(Code); ++B)
+                Code[B] = (unsigned char)(Word >> (B * CHAR_BIT));
+            uc_engine *UC;
+            uc_common_setup(&UC, UC_ARCH_ARM64, UC_MODE_ARM, (const char *)Code,
+                            sizeof(Code), UC_CPU_ARM64_MAX);
+            for (unsigned I = 0; I < sizeof(Inputs) / sizeof(Inputs[0]); ++I) {
+                if (Inputs[I].Width != Width)
+                    continue;
+                unsigned char Memory[sizeof(uint64_t)];
+                for (unsigned B = 0; B < sizeof(Memory); ++B)
+                    Memory[B] =
+                        (unsigned char)(Inputs[I].Before >> (B * CHAR_BIT));
+                OK(uc_mem_write(UC, DataAddress, Memory, sizeof(Memory)));
+                uint64_t Source = Inputs[I].Source, Target = ResultSeed;
+                uint64_t Address = DataAddress, Flags = InitialFlags;
+                uint64_t Stack = StackSeed, PC;
+                OK(uc_reg_write(UC, UC_ARM64_REG_X0, &Source));
+                OK(uc_reg_write(UC, UC_ARM64_REG_X2, &Target));
+                OK(uc_reg_write(UC, UC_ARM64_REG_X4, &Address));
+                OK(uc_reg_write(UC, UC_ARM64_REG_NZCV, &Flags));
+                OK(uc_reg_write(UC, UC_ARM64_REG_SP, &Stack));
+                OK(uc_emu_start(UC, code_start, code_start + sizeof(Code), 0,
+                                1));
+                OK(uc_mem_read(UC, DataAddress, Memory, sizeof(Memory)));
+                uint64_t After = 0;
+                for (unsigned B = 0; B < sizeof(Memory); ++B)
+                    After |= (uint64_t)Memory[B] << (B * CHAR_BIT);
+                TEST_CHECK(After == ((Inputs[I].Before & ~Mask) |
+                                     Inputs[I].Expected[Cases[C].Kind]));
+                TEST_MSG(CaseFailure, Cases[C].Name, I, Result);
+                OK(uc_reg_read(UC, UC_ARM64_REG_X0, &Source));
+                OK(uc_reg_read(UC, UC_ARM64_REG_X2, &Target));
+                OK(uc_reg_read(UC, UC_ARM64_REG_X4, &Address));
+                OK(uc_reg_read(UC, UC_ARM64_REG_NZCV, &Flags));
+                OK(uc_reg_read(UC, UC_ARM64_REG_SP, &Stack));
+                OK(uc_reg_read(UC, UC_ARM64_REG_PC, &PC));
+                const uint64_t Old = Inputs[I].Before & Mask;
+                TEST_CHECK(Source == (Result == 0 ? Old : Inputs[I].Source));
+                TEST_CHECK(Target ==
+                           (Result == ResultRegister ? Old : ResultSeed));
+                TEST_CHECK(Address ==
+                           (Result == AddressRegister ? Old : DataAddress));
+                TEST_CHECK(Flags == InitialFlags);
+                TEST_CHECK(Stack == StackSeed);
+                TEST_CHECK(PC == code_start + sizeof(Code));
+                TEST_MSG(CaseFailure, Cases[C].Name, I, Result);
+            }
+            OK(uc_close(UC));
+        }
+    }
+}
+
 TEST_LIST = {{"test_arm64_until", test_arm64_until},
+#define UC_ARM64_ATOMIC_TEST(Name) {#Name, Name},
+#include "arm64_atomic_cases.inc"
+#undef UC_ARM64_ATOMIC_TEST
              {"test_arm64_code_patching", test_arm64_code_patching},
              {"test_arm64_code_patching_count", test_arm64_code_patching_count},
              {"test_arm64_v8_cas", test_arm64_v8_cas},

@@ -14,12 +14,14 @@ class JumEbxHang(regress.RegressTest):
 
         mu.mem_map(CODE_ADDR, 1024 * 4)
         mu.mem_write(CODE_ADDR, CODE)
-        # If EBX is zero then an exception is raised, as expected
+        # Exercise the target fetch. A one-instruction budget may stop after
+        # the jump without attempting that fetch on some host translators.
+        # The timeout still bounds a recurrence of the original hang.
         mu.reg_write(UC_X86_REG_EBX, 0x0)
 
         regress.logger.debug(">>> jmp ebx (ebx = 0)")
         with self.assertRaises(UcError) as m:
-            mu.emu_start(CODE_ADDR, CODE_ADDR + 2, count=1)
+            mu.emu_start(CODE_ADDR, CODE_ADDR + len(CODE), timeout=UC_SECOND_SCALE)
 
         self.assertEqual(m.exception.errno, UC_ERR_FETCH_UNMAPPED)
 
@@ -31,7 +33,7 @@ class JumEbxHang(regress.RegressTest):
         mu.mem_write(CODE_ADDR, CODE)
 
         with self.assertRaises(UcError) as m:
-            mu.emu_start(CODE_ADDR, CODE_ADDR + 2, count=1)
+            mu.emu_start(CODE_ADDR, CODE_ADDR + len(CODE), timeout=UC_SECOND_SCALE)
 
         self.assertEqual(m.exception.errno, UC_ERR_FETCH_UNMAPPED)
 
