@@ -1,0 +1,72 @@
+/* Original counted-branch regression data, 2026-10-05.
+ * NeverD contributors; licensed under the Unicorn unit-test terms. */
+#ifdef UC_LOOP_VALUE
+UC_LOOP_VALUE(Page, 4096)
+UC_LOOP_VALUE(Code16, 0x2000)
+UC_LOOP_VALUE(Code32, 0x10000)
+UC_LOOP_VALUE(EntryOffset, 1024)
+UC_LOOP_VALUE(Nop, 0x90)
+UC_LOOP_VALUE(InstructionBytes, 2)
+UC_LOOP_VALUE(MaxPrefixBytes, 2)
+UC_LOOP_VALUE(OneInstruction, 1)
+UC_LOOP_VALUE(ZeroFlag, 0x40)
+#endif
+#ifdef UC_LOOP_WIDE_VALUE
+UC_LOOP_WIDE_VALUE(Code64, 0x100010000ULL)
+UC_LOOP_WIDE_VALUE(SeedAX, 0x1234567887654321ULL)
+UC_LOOP_WIDE_VALUE(SeedSP, 0xfedcba9876543210ULL)
+UC_LOOP_WIDE_VALUE(SeedR9, 0x9988776655443322ULL)
+#endif
+#ifdef UC_LOOP_TEXT
+UC_LOOP_TEXT(CaseContext,
+             "mode=%u prefix=%zu opcode=%x input=%llx flags=%x offset=%d "
+             "counter=%llx expected=%llx pc=%llx expected=%llx")
+#endif
+#ifdef UC_LOOP_OPERATION
+UC_LOOP_OPERATION(0xe0, -1, true)
+UC_LOOP_OPERATION(0xe1, 1, true)
+UC_LOOP_OPERATION(0xe2, 0, true)
+UC_LOOP_OPERATION(0xe3, 0, false)
+#endif
+#ifdef UC_LOOP_PREFIX
+// Size, address override, operand override, long-mode-only, original bytes.
+UC_LOOP_PREFIX(0, false, false, false, 0, 0)
+UC_LOOP_PREFIX(1, false, true, false, 0x66, 0)
+UC_LOOP_PREFIX(1, true, false, false, 0x67, 0)
+UC_LOOP_PREFIX(2, true, true, false, 0x66, 0x67)
+UC_LOOP_PREFIX(1, false, false, true, 0x48, 0)
+UC_LOOP_PREFIX(1, false, false, true, 0x41, 0)
+UC_LOOP_PREFIX(2, true, false, true, 0x67, 0x48)
+#endif
+#ifdef UC_LOOP_COUNT
+UC_LOOP_COUNT(0)
+UC_LOOP_COUNT(1)
+UC_LOOP_COUNT(2)
+UC_LOOP_COUNT(0xffff)
+UC_LOOP_COUNT(0x10000)
+UC_LOOP_COUNT(0x10001)
+UC_LOOP_COUNT(0xffffffff)
+UC_LOOP_COUNT(0x100000000ULL)
+UC_LOOP_COUNT(0x100000001ULL)
+UC_LOOP_COUNT(0x100000002ULL)
+UC_LOOP_COUNT(0xfedcba9876543210ULL)
+UC_LOOP_COUNT(UINT64_MAX)
+#endif
+#ifdef UC_LOOP_FLAGS
+UC_LOOP_FLAGS(2)
+UC_LOOP_FLAGS(0x42)
+UC_LOOP_FLAGS(0xe97)
+UC_LOOP_FLAGS(0xed7)
+#endif
+#ifdef UC_LOOP_DISPLACEMENT
+UC_LOOP_DISPLACEMENT(-128)
+UC_LOOP_DISPLACEMENT(-16)
+UC_LOOP_DISPLACEMENT(0)
+UC_LOOP_DISPLACEMENT(16)
+UC_LOOP_DISPLACEMENT(127)
+#endif
+#ifdef UC_LOOP_TEST
+UC_LOOP_TEST(LongModeTargetsAndCounters, longModeTargetsAndCounters)
+UC_LOOP_TEST(Legacy32TargetAndCounterWidths, legacy32TargetAndCounterWidths)
+UC_LOOP_TEST(Legacy16TargetAndCounterWidths, legacy16TargetAndCounterWidths)
+#endif
