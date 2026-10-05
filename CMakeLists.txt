@@ -1277,6 +1277,7 @@ if(UNICORN_HAS_X86)
         test_x86_decode_boundaries
         test_x86_enter
         test_x86_status_flags
+        test_x86_loop_targets
         test_ctl_cache_arguments)
 endif()
 if(UNICORN_HAS_ARM)

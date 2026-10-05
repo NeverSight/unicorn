@@ -20698,7 +20698,8 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             tval = (int8_t)insn_get(env, s, MO_8);
             next_eip = s->pc - s->cs_base;
             tval += next_eip;
-            if (dflag == MO_16) {
+            /* In long mode, 66H does not narrow LOOP/JCXZ branch targets. */
+            if (!CODE64(s) && dflag == MO_16) {
                 tval &= 0xffff;
             }
 
