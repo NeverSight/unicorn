@@ -622,7 +622,7 @@ int cpu_exec(struct uc_struct *uc, CPUState *cpu)
              * precise-SMC restart that counts the same store twice before
              * it commits. Guest exceptions are handled by the outer loop
              * before this completed-step boundary is considered. */
-            if (uc->emu_count == 1) {
+            if (uc_use_bounded_step(uc)) {
                 if (uc->emu_counter >= uc->emu_count) {
                     uc_emu_stop(uc);
                     continue;

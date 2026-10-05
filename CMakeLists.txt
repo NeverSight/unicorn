@@ -1272,7 +1272,11 @@ if(UNICORN_HAS_X86)
     set(UNICORN_SAMPLE_FILE ${UNICORN_SAMPLE_FILE} sample_x86 sample_x86_32_gdt_and_seg_regs sample_batch_reg mem_apis shellcode sample_mmu)
     target_link_libraries(x86_64-softmmu PRIVATE unicorn-common)
     set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_x86 test_x86_apx_state test_x86_approx14 test_x86_approx14_memory test_x86_approx28 test_x86_approx28_memory test_x86_vrange_vscalef test_x86_getexp_getmant)
-    list(APPEND UNICORN_TEST_FILE test_x86_exception_ack test_x86_decode_boundaries test_x86_status_flags)
+    list(APPEND UNICORN_TEST_FILE
+        test_x86_exception_ack
+        test_x86_decode_boundaries
+        test_x86_enter
+        test_x86_status_flags)
 endif()
 if(UNICORN_HAS_ARM)
     set(UNICORN_COMPILE_OPTIONS ${UNICORN_COMPILE_OPTIONS} -DUNICORN_HAS_ARM)
