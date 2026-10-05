@@ -3235,17 +3235,23 @@ void tcg_gen_atomic_cmpxchg_i64(TCGContext *tcg_ctx, TCGv_i64 retv, TCGv addr, T
     }
 }
 
-static void do_nonatomic_op_i32(TCGContext *tcg_ctx, TCGv_i32 ret, TCGv addr, TCGv_i32 val,
-                                TCGArg idx, MemOp memop, bool new_val,
-                                void (*gen)(TCGContext *tcg_ctx, TCGv_i32, TCGv_i32, TCGv_i32))
+static void do_nonatomic_op_i32(TCGContext *tcg_ctx, TCGv_i32 ret, TCGv addr,
+                                TCGv_i32 val, TCGArg idx, MemOp memop,
+                                MemOp input_sign, bool new_val,
+                                void (*gen)(TCGContext *tcg_ctx, TCGv_i32,
+                                            TCGv_i32, TCGv_i32))
 {
     TCGv_i32 t1 = tcg_temp_new_i32(tcg_ctx);
     TCGv_i32 t2 = tcg_temp_new_i32(tcg_ctx);
 
     memop = tcg_canonicalize_memop(memop, 0, 0);
 
+    /* Keep operand signedness separate from the memory access and result. */
     tcg_gen_qemu_ld_i32(tcg_ctx, t1, addr, idx, memop);
-    tcg_gen_ext_i32(tcg_ctx, t2, val, memop);
+    if (input_sign) {
+        tcg_gen_ext_i32(tcg_ctx, t1, t1, memop | input_sign);
+    }
+    tcg_gen_ext_i32(tcg_ctx, t2, val, memop | input_sign);
     gen(tcg_ctx, t2, t1, t2);
     tcg_gen_qemu_st_i32(tcg_ctx, t2, addr, idx, memop);
 
@@ -3275,9 +3281,11 @@ static void do_atomic_op_i32(TCGContext *tcg_ctx, TCGv_i32 ret, TCGv addr, TCGv_
     }
 }
 
-static void do_nonatomic_op_i64(TCGContext *tcg_ctx, TCGv_i64 ret, TCGv addr, TCGv_i64 val,
-                                TCGArg idx, MemOp memop, bool new_val,
-                                void (*gen)(TCGContext *tcg_ctx, TCGv_i64, TCGv_i64, TCGv_i64))
+static void do_nonatomic_op_i64(TCGContext *tcg_ctx, TCGv_i64 ret, TCGv addr,
+                                TCGv_i64 val, TCGArg idx, MemOp memop,
+                                MemOp input_sign, bool new_val,
+                                void (*gen)(TCGContext *tcg_ctx, TCGv_i64,
+                                            TCGv_i64, TCGv_i64))
 {
     TCGv_i64 t1 = tcg_temp_new_i64(tcg_ctx);
     TCGv_i64 t2 = tcg_temp_new_i64(tcg_ctx);
@@ -3285,7 +3293,10 @@ static void do_nonatomic_op_i64(TCGContext *tcg_ctx, TCGv_i64 ret, TCGv addr, TC
     memop = tcg_canonicalize_memop(memop, 1, 0);
 
     tcg_gen_qemu_ld_i64(tcg_ctx, t1, addr, idx, memop);
-    tcg_gen_ext_i64(tcg_ctx, t2, val, memop);
+    if (input_sign) {
+        tcg_gen_ext_i64(tcg_ctx, t1, t1, memop | input_sign);
+    }
+    tcg_gen_ext_i64(tcg_ctx, t2, val, memop | input_sign);
     gen(tcg_ctx, t2, t1, t2);
     tcg_gen_qemu_st_i64(tcg_ctx, t2, addr, idx, memop);
 
@@ -3334,54 +3345,39 @@ static void do_atomic_op_i64(TCGContext *tcg_ctx, TCGv_i64 ret, TCGv addr, TCGv_
     }
 }
 
-#define GEN_ATOMIC_HELPER(NAME, OP, NEW)                                \
-static void * const table_##NAME[16] = {                                \
-    [MO_8] = gen_helper_atomic_##NAME##b,                               \
-    [MO_16 | MO_LE] = gen_helper_atomic_##NAME##w_le,                   \
-    [MO_16 | MO_BE] = gen_helper_atomic_##NAME##w_be,                   \
-    [MO_32 | MO_LE] = gen_helper_atomic_##NAME##l_le,                   \
-    [MO_32 | MO_BE] = gen_helper_atomic_##NAME##l_be,                   \
-    WITH_ATOMIC64([MO_64 | MO_LE] = gen_helper_atomic_##NAME##q_le)     \
-    WITH_ATOMIC64([MO_64 | MO_BE] = gen_helper_atomic_##NAME##q_be)     \
-};                                                                      \
-void tcg_gen_atomic_##NAME##_i32                                        \
-    (TCGContext *tcg_ctx, TCGv_i32 ret, TCGv addr, TCGv_i32 val, TCGArg idx, MemOp memop)    \
-{                                                                       \
-    if (tcg_ctx->tb_cflags & CF_PARALLEL) {                             \
-        do_atomic_op_i32(tcg_ctx, ret, addr, val, idx, memop, table_##NAME);     \
-    } else {                                                            \
-        do_nonatomic_op_i32(tcg_ctx, ret, addr, val, idx, memop, NEW,            \
-                            tcg_gen_##OP##_i32);                        \
-    }                                                                   \
-}                                                                       \
-void tcg_gen_atomic_##NAME##_i64                                        \
-    (TCGContext *tcg_ctx, TCGv_i64 ret, TCGv addr, TCGv_i64 val, TCGArg idx, MemOp memop)    \
-{                                                                       \
-    if (tcg_ctx->tb_cflags & CF_PARALLEL) {                             \
-        do_atomic_op_i64(tcg_ctx, ret, addr, val, idx, memop, table_##NAME);     \
-    } else {                                                            \
-        do_nonatomic_op_i64(tcg_ctx, ret, addr, val, idx, memop, NEW,            \
-                            tcg_gen_##OP##_i64);                        \
-    }                                                                   \
-}
-
-GEN_ATOMIC_HELPER(fetch_add, add, 0)
-GEN_ATOMIC_HELPER(fetch_and, and, 0)
-GEN_ATOMIC_HELPER(fetch_or, or, 0)
-GEN_ATOMIC_HELPER(fetch_xor, xor, 0)
-GEN_ATOMIC_HELPER(fetch_smin, smin, 0)
-GEN_ATOMIC_HELPER(fetch_umin, umin, 0)
-GEN_ATOMIC_HELPER(fetch_smax, smax, 0)
-GEN_ATOMIC_HELPER(fetch_umax, umax, 0)
-
-GEN_ATOMIC_HELPER(add_fetch, add, 1)
-GEN_ATOMIC_HELPER(and_fetch, and, 1)
-GEN_ATOMIC_HELPER(or_fetch, or, 1)
-GEN_ATOMIC_HELPER(xor_fetch, xor, 1)
-GEN_ATOMIC_HELPER(smin_fetch, smin, 1)
-GEN_ATOMIC_HELPER(umin_fetch, umin, 1)
-GEN_ATOMIC_HELPER(smax_fetch, smax, 1)
-GEN_ATOMIC_HELPER(umax_fetch, umax, 1)
+#define GEN_ATOMIC_HELPER(NAME, OP, NEW, INPUT_SIGN)                           \
+    static void *const table_##NAME[16] = {                                    \
+        [MO_8] = gen_helper_atomic_##NAME##b,                                  \
+        [MO_16 | MO_LE] = gen_helper_atomic_##NAME##w_le,                      \
+        [MO_16 | MO_BE] = gen_helper_atomic_##NAME##w_be,                      \
+        [MO_32 | MO_LE] = gen_helper_atomic_##NAME##l_le,                      \
+        [MO_32 | MO_BE] = gen_helper_atomic_##NAME##l_be,                      \
+        WITH_ATOMIC64([MO_64 | MO_LE] = gen_helper_atomic_##NAME##q_le)        \
+            WITH_ATOMIC64([MO_64 | MO_BE] = gen_helper_atomic_##NAME##q_be)};  \
+    void tcg_gen_atomic_##NAME##_i32(TCGContext *tcg_ctx, TCGv_i32 ret,        \
+                                     TCGv addr, TCGv_i32 val, TCGArg idx,      \
+                                     MemOp memop)                              \
+    {                                                                          \
+        if (tcg_ctx->tb_cflags & CF_PARALLEL) {                                \
+            do_atomic_op_i32(tcg_ctx, ret, addr, val, idx, memop,              \
+                             table_##NAME);                                    \
+        } else {                                                               \
+            do_nonatomic_op_i32(tcg_ctx, ret, addr, val, idx, memop,           \
+                                INPUT_SIGN, NEW, tcg_gen_##OP##_i32);          \
+        }                                                                      \
+    }                                                                          \
+    void tcg_gen_atomic_##NAME##_i64(TCGContext *tcg_ctx, TCGv_i64 ret,        \
+                                     TCGv addr, TCGv_i64 val, TCGArg idx,      \
+                                     MemOp memop)                              \
+    {                                                                          \
+        if (tcg_ctx->tb_cflags & CF_PARALLEL) {                                \
+            do_atomic_op_i64(tcg_ctx, ret, addr, val, idx, memop,              \
+                             table_##NAME);                                    \
+        } else {                                                               \
+            do_nonatomic_op_i64(tcg_ctx, ret, addr, val, idx, memop,           \
+                                INPUT_SIGN, NEW, tcg_gen_##OP##_i64);          \
+        }                                                                      \
+    }
 
 static void tcg_gen_mov2_i32(TCGContext *tcg_ctx, TCGv_i32 r, TCGv_i32 a, TCGv_i32 b)
 {
@@ -3393,6 +3389,6 @@ static void tcg_gen_mov2_i64(TCGContext *tcg_ctx, TCGv_i64 r, TCGv_i64 a, TCGv_i
     tcg_gen_mov_i64(tcg_ctx, r, b);
 }
 
-GEN_ATOMIC_HELPER(xchg, mov2, 0)
+#include "tcg-atomic-ops.inc"
 
 #undef GEN_ATOMIC_HELPER
