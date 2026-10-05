@@ -4004,7 +4004,7 @@ static bool evex_fcmp_predicate_matches(uint32_t predicate, int relation)
 }
 
 #ifdef TARGET_X86_64
-static bool apx_canonical_address(CPUX86State *env, uint64_t address);
+static bool x86_canonical_address(CPUX86State *env, uint64_t address);
 #endif
 
 static int evex_fcmp_lane(uint64_t left, uint64_t right, int element_bytes,
@@ -4141,8 +4141,8 @@ static void evex_fcmp_check_address(CPUX86State *env,
 {
 #ifdef TARGET_X86_64
     if (address > UINT64_MAX - (element_bytes - 1) ||
-        !apx_canonical_address(env, address) ||
-        !apx_canonical_address(env, address + element_bytes - 1)) {
+        !x86_canonical_address(env, address) ||
+        !x86_canonical_address(env, address + element_bytes - 1)) {
         const int exception =
             (desc & EVEX_FCMP_STACK) ? EXCP0C_STACK : EXCP0D_GPF;
 
@@ -4795,12 +4795,30 @@ static void apx_pair_set_gpr(CPUX86State *env, unsigned int reg,
     }
 }
 
-static bool apx_canonical_address(CPUX86State *env, uint64_t address)
+static bool x86_canonical_address(CPUX86State *env, uint64_t address)
 {
     const int shift = (env->cr[4] & CR4_LA57_MASK) ? 56 : 47;
     const int64_t sign_extension = (int64_t)address >> shift;
 
     return sign_extension == 0 || sign_extension == -1;
+}
+
+/* ENTER checks write access at the final stack pointer after completing the
+ * frame stores, but before publishing BP or SP. The check itself stores no
+ * data. Earlier stores remain visible if this check faults. */
+void helper_enter_probe(CPUX86State *env, target_ulong address, uint32_t size)
+{
+    const uintptr_t ra = GETPC();
+
+    if ((env->hflags & HF_CS64_MASK) &&
+        (address > UINT64_MAX - (size - 1) ||
+         !x86_canonical_address(env, address) ||
+         !x86_canonical_address(env, address + size - 1))) {
+        raise_exception_err_ra(env, EXCP0C_STACK, 0, ra);
+    }
+    if (!x86_probe_write(env, address, size, ra)) {
+        cpu_loop_exit_restore(env_cpu(env), ra);
+    }
 }
 
 void helper_apx_push_pop_check(CPUX86State *env, uint32_t desc)
@@ -4811,8 +4829,8 @@ void helper_apx_push_pop_check(CPUX86State *env, uint32_t desc)
     const uint64_t address = push ? stack - width : stack;
 
     if (address > UINT64_MAX - (width - 1) ||
-        !apx_canonical_address(env, address) ||
-        !apx_canonical_address(env, address + width - 1)) {
+        !x86_canonical_address(env, address) ||
+        !x86_canonical_address(env, address + width - 1)) {
         raise_exception_err_ra(env, EXCP0C_STACK, 0, GETPC());
     }
 }
@@ -4820,7 +4838,7 @@ void helper_apx_push_pop_check(CPUX86State *env, uint32_t desc)
 void helper_apx_memory_check(CPUX86State *env, target_ulong address,
                              uint32_t desc)
 {
-    if (!apx_canonical_address(env, address)) {
+    if (!x86_canonical_address(env, address)) {
         const int exception =
             (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF;
 
@@ -4833,8 +4851,8 @@ static void apx_evex_check_memory_range(CPUX86State *env, uint64_t address,
                                         uint32_t desc, uintptr_t ra)
 {
     if (address > UINT64_MAX - (access_bytes - 1) ||
-        !apx_canonical_address(env, address) ||
-        !apx_canonical_address(env, address + access_bytes - 1)) {
+        !x86_canonical_address(env, address) ||
+        !x86_canonical_address(env, address + access_bytes - 1)) {
         const int exception =
             (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF;
 
@@ -4901,9 +4919,8 @@ void helper_apx_invpcid(CPUX86State *env, target_ulong address,
     uint64_t descriptor_low;
     uint64_t descriptor_address;
 
-    if (address > UINT64_MAX - 15 ||
-        !apx_canonical_address(env, address) ||
-        !apx_canonical_address(env, address + 15)) {
+    if (address > UINT64_MAX - 15 || !x86_canonical_address(env, address) ||
+        !x86_canonical_address(env, address + 15)) {
         raise_exception_err_ra(
             env, (desc & APX_MEMORY_SS) ? EXCP0C_STACK : EXCP0D_GPF, 0, ra);
     }
@@ -4915,9 +4932,8 @@ void helper_apx_invpcid(CPUX86State *env, target_ulong address,
     descriptor_address = cpu_ldq_data_ra(env, address + 8, ra);
 
     if (type > 3 || (descriptor_low & ~UINT64_C(0xfff)) != 0 ||
-        (!(env->cr[4] & CR4_PCIDE_MASK) && type <= 1 &&
-         descriptor_low != 0) ||
-        (type == 0 && !apx_canonical_address(env, descriptor_address))) {
+        (!(env->cr[4] & CR4_PCIDE_MASK) && type <= 1 && descriptor_low != 0) ||
+        (type == 0 && !x86_canonical_address(env, descriptor_address))) {
         raise_exception_err_ra(env, EXCP0D_GPF, 0, ra);
     }
 
@@ -4945,9 +4961,8 @@ void helper_apx_enqueue(CPUX86State *env, target_ulong source_address,
     }
 
     if (source_address > UINT64_MAX - (sizeof(source) - 1) ||
-        !apx_canonical_address(env, source_address) ||
-        !apx_canonical_address(env,
-                               source_address + sizeof(source) - 1)) {
+        !x86_canonical_address(env, source_address) ||
+        !x86_canonical_address(env, source_address + sizeof(source) - 1)) {
         raise_exception_err_ra(
             env,
             (desc & APX_ENQUEUE_SOURCE_SS) ? EXCP0C_STACK : EXCP0D_GPF,
@@ -4971,9 +4986,8 @@ void helper_apx_enqueue(CPUX86State *env, target_ulong source_address,
 
     if ((destination_address & 63) ||
         destination_address > UINT64_MAX - (sizeof(source) - 1) ||
-        !apx_canonical_address(env, destination_address) ||
-        !apx_canonical_address(
-            env, destination_address + sizeof(source) - 1)) {
+        !x86_canonical_address(env, destination_address) ||
+        !x86_canonical_address(env, destination_address + sizeof(source) - 1)) {
         raise_exception_err_ra(env, EXCP0D_GPF, 0, ra);
     }
 
@@ -5007,10 +5021,9 @@ void helper_apx_movdir64b(CPUX86State *env, target_ulong source_address,
             env, source_address + index * sizeof(source[index]), ra);
     }
 
-    if ((destination & 63) ||
-        destination > UINT64_MAX - (sizeof(source) - 1) ||
-        !apx_canonical_address(env, destination) ||
-        !apx_canonical_address(env, destination + sizeof(source) - 1)) {
+    if ((destination & 63) || destination > UINT64_MAX - (sizeof(source) - 1) ||
+        !x86_canonical_address(env, destination) ||
+        !x86_canonical_address(env, destination + sizeof(source) - 1)) {
         raise_exception_err_ra(env, EXCP0D_GPF, 0, ra);
     }
 
@@ -5266,8 +5279,8 @@ static void amx_check_canonical_range(CPUX86State *env, uint64_t address,
     const uint64_t last = address + size - 1;
 
     if (address > UINT64_MAX - (size - 1) ||
-        !apx_canonical_address(env, address) ||
-        !apx_canonical_address(env, last)) {
+        !x86_canonical_address(env, address) ||
+        !x86_canonical_address(env, last)) {
         raise_exception_err_ra(env, stack ? EXCP0C_STACK : EXCP0D_GPF, 0,
                                GETPC());
     }
@@ -6011,8 +6024,8 @@ void helper_apx_push2_pop2(CPUX86State *env, uint32_t desc,
         const uint64_t v_value = apx_pair_get_gpr(env, v);
         const uint64_t b_value = apx_pair_get_gpr(env, b);
 
-        if (!apx_canonical_address(env, v_address) ||
-            !apx_canonical_address(env, b_address)) {
+        if (!x86_canonical_address(env, v_address) ||
+            !x86_canonical_address(env, b_address)) {
             raise_exception_err_ra(env, EXCP0C_STACK, 0, ra);
         }
 
@@ -6033,7 +6046,7 @@ void helper_apx_push2_pop2(CPUX86State *env, uint32_t desc,
         return;
     }
 
-    if (!apx_canonical_address(env, stack)) {
+    if (!x86_canonical_address(env, stack)) {
         raise_exception_err_ra(env, EXCP0C_STACK, 0, ra);
     }
     value = cpu_ldq_data_ra(env, stack, ra);
@@ -6043,7 +6056,7 @@ void helper_apx_push2_pop2(CPUX86State *env, uint32_t desc,
     apx_pair_set_gpr(env, v, value);
     env->regs[R_ESP] = stack + 8;
 
-    if (!apx_canonical_address(env, stack + 8)) {
+    if (!x86_canonical_address(env, stack + 8)) {
         raise_exception_err_ra(env, EXCP0C_STACK, 0, ra);
     }
     value = cpu_ldq_data_ra(env, stack + 8, ra);

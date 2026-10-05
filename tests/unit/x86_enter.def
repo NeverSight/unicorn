@@ -26,3 +26,62 @@ UC_X86_ENTER_CASE(QuadInLongMode, UC_MODE_64, UINT64_C(0xfedcba9876543210),
 UC_X86_ENTER_CASE(DoubleInProtectedMode, UC_MODE_32, 0x76543210, 0x1407c,
                   0x1405c, 4, 4, 0xc8, 0x20, 0x00, 0x00)
 #endif
+
+#ifdef UC_X86_ENTER_FAULT_CONSTANT
+UC_X86_ENTER_FAULT_CONSTANT(FaultOffset, 128)
+UC_X86_ENTER_FAULT_CONSTANT(PatternMultiplier, 37)
+UC_X86_ENTER_FAULT_CONSTANT(EnterOpcode, 0xc8)
+UC_X86_ENTER_FAULT_CONSTANT(OperandPrefix, 0x66)
+UC_X86_ENTER_FAULT_CONSTANT(NestingMask, 31)
+UC_X86_ENTER_FAULT_CONSTANT(FramePage, 3)
+UC_X86_ENTER_FAULT_CONSTANT(StackPage, 5)
+UC_X86_ENTER_FAULT_CONSTANT(ProbePage, 1)
+UC_X86_ENTER_FAULT_CONSTANT(CodeCapacity, 5)
+#endif
+#ifdef UC_X86_ENTER_FAULT_MODE
+// Name, execution mode, operand width, explicit operand prefix.
+UC_X86_ENTER_FAULT_MODE(Word64, UC_MODE_64, 2, true)
+UC_X86_ENTER_FAULT_MODE(Qword64, UC_MODE_64, 8, false)
+UC_X86_ENTER_FAULT_MODE(Word32, UC_MODE_32, 2, true)
+UC_X86_ENTER_FAULT_MODE(Dword32, UC_MODE_32, 4, false)
+#endif
+#ifdef UC_X86_ENTER_FAULT_STAGE
+// Name, initial SP/BP offsets, guard page, allocation, nesting, completed
+// stores, access type, fault address offset, fault width.
+UC_X86_ENTER_FAULT_STAGE(FinalProbe, 5 * PageBytes + FaultOffset,
+                         3 * PageBytes + FaultOffset, 1,
+                         4 * PageBytes - 4 * Width, 3, 4, true,
+                         PageBytes + FaultOffset, Width)
+UC_X86_ENTER_FAULT_STAGE(FirstAncestor, 5 * PageBytes + FaultOffset,
+                         2 * PageBytes + Width, 2, 0, 3, 1, false,
+                         2 * PageBytes, Width)
+UC_X86_ENTER_FAULT_STAGE(SecondPush, 5 * PageBytes + Width,
+                         3 * PageBytes + FaultOffset, 4, 0, 1, 1, true,
+                         5 * PageBytes - Width, Width)
+UC_X86_ENTER_FAULT_STAGE(SecondAncestor, 5 * PageBytes + FaultOffset,
+                         3 * PageBytes + Width, 2, 0, 3, 2, false,
+                         3 * PageBytes - Width, Width)
+UC_X86_ENTER_FAULT_STAGE(SplitFirstPush, 5 * PageBytes + Width / 2,
+                         3 * PageBytes + FaultOffset, 5, 0, 0, 0, true,
+                         5 * PageBytes, Width / 2)
+UC_X86_ENTER_FAULT_STAGE(SplitFinalProbe, 5 * PageBytes + FaultOffset,
+                         3 * PageBytes + FaultOffset, 2,
+                         3 * PageBytes + FaultOffset + 1 - 4 * Width, 3, 4,
+                         true, 2 * PageBytes, Width - 1)
+#endif
+#ifdef UC_X86_ENTER_OVERLAP_NESTING
+UC_X86_ENTER_OVERLAP_NESTING(0)
+UC_X86_ENTER_OVERLAP_NESTING(1)
+UC_X86_ENTER_OVERLAP_NESTING(2)
+UC_X86_ENTER_OVERLAP_NESTING(31)
+UC_X86_ENTER_OVERLAP_NESTING(32)
+UC_X86_ENTER_OVERLAP_NESTING(33)
+UC_X86_ENTER_OVERLAP_NESTING(255)
+#endif
+
+#ifdef UC_X86_ENTER_FAULT_TEST
+UC_X86_ENTER_FAULT_TEST(OrderedFaultsRetainCompletedStores, CheckFaults)
+UC_X86_ENTER_FAULT_TEST(FinalProbeRepairStoresNoData, CheckProbeRepair)
+UC_X86_ENTER_FAULT_TEST(OverlappingCopiesReadEarlierStores, CheckOverlap)
+UC_X86_ENTER_FAULT_TEST(FinalProbeDoesNotReadWriteOnlyRAM, CheckWriteOnlyProbe)
+#endif

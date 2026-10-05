@@ -2173,7 +2173,8 @@ store_memop(void *haddr, uint64_t val, MemOp op)
 static bool store_validate_page(CPUArchState *env, target_ulong addr,
                                 size_t size, uint64_t val, uintptr_t mmu_idx,
                                 uintptr_t retaddr, bool *synced,
-                                uintptr_t *index_out, CPUTLBEntry **entry_out,
+                                bool prepare_write, uintptr_t *index_out,
+                                CPUTLBEntry **entry_out,
                                 target_ulong *tlb_addr_out)
 {
     struct uc_struct *uc = env->uc;
@@ -2301,7 +2302,8 @@ static bool store_validate_page(CPUArchState *env, target_ulong addr,
         uc->invalid_error = UC_ERR_OK;
     }
 
-    if (uc->snapshot_level && mr->ram && mr->priority < uc->snapshot_level) {
+    if (prepare_write && uc->snapshot_level && mr->ram &&
+        mr->priority < uc->snapshot_level) {
         mr = memory_cow(uc, mr, paddr & TARGET_PAGE_MASK, TARGET_PAGE_SIZE);
         if (!mr) {
             uc->invalid_addr = paddr;
@@ -2322,9 +2324,11 @@ static bool store_validate_page(CPUArchState *env, target_ulong addr,
 }
 
 #ifdef TARGET_X86_64
-/* Validate a complete x86 vector-store element before any lane is committed. */
-bool x86_evex_store_preflight(CPUArchState *env, target_ulong addr,
-                              size_t size, uint64_t val, uintptr_t retaddr)
+/* Share physical permissions and repair callbacks between actual stores and
+ * write-permission probes. A probe must not dirty RAM or perform device I/O. */
+static bool x86_store_preflight(CPUArchState *env, target_ulong addr,
+                                size_t size, uint64_t val, uintptr_t retaddr,
+                                bool prepare_write)
 {
     struct uc_struct *uc = env->uc;
     const uintptr_t mmu_idx = cpu_mmu_index(env, false);
@@ -2341,15 +2345,15 @@ bool x86_evex_store_preflight(CPUArchState *env, target_ulong addr,
         CPUTLBEntry *entry;
         target_ulong tlb_addr;
 
-        if (!store_validate_page(env, part_addr, part_size, part_val,
-                                 mmu_idx, retaddr, &synced, &index, &entry,
-                                 &tlb_addr)) {
+        if (!store_validate_page(env, part_addr, part_size, part_val, mmu_idx,
+                                 retaddr, &synced, prepare_write, &index,
+                                 &entry, &tlb_addr)) {
             if (!synced && !uc->skip_sync_pc_on_exit && retaddr) {
                 cpu_restore_state(uc->cpu, retaddr, false);
             }
             return false;
         }
-        if (unlikely(tlb_addr & TLB_WATCHPOINT)) {
+        if (prepare_write && unlikely(tlb_addr & TLB_WATCHPOINT)) {
             cpu_check_watchpoint(env_cpu(env), part_addr, part_size,
                                  env_tlb(env)->d[mmu_idx].iotlb[index].attrs,
                                  BP_MEM_WRITE, retaddr);
@@ -2357,6 +2361,20 @@ bool x86_evex_store_preflight(CPUArchState *env, target_ulong addr,
         consumed += part_size;
     }
     return true;
+}
+
+/* Validate a complete x86 vector-store element before any lane is committed. */
+bool x86_evex_store_preflight(CPUArchState *env, target_ulong addr, size_t size,
+                              uint64_t val, uintptr_t retaddr)
+{
+    return x86_store_preflight(env, addr, size, val, retaddr, true);
+}
+
+bool x86_probe_write(CPUArchState *env, target_ulong addr, size_t size,
+                     uintptr_t retaddr)
+{
+    return x86_store_preflight(env, addr, size, 0, retaddr, false) &&
+           !env->uc->stop_request;
 }
 #endif
 
@@ -2655,7 +2673,7 @@ static inline void store_helper(CPUArchState *env, target_ulong addr,
             val2 = val >> ((size - size2) * 8);
         }
         if (!store_validate_page(env, page2, size2, val2, mmu_idx, retaddr,
-                                 &synced, &index2, &entry2, &tlb_addr2)) {
+                                 &synced, true, &index2, &entry2, &tlb_addr2)) {
             return;
         }
 

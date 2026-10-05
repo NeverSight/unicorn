@@ -13,6 +13,7 @@ DEF_HELPER_2(idivw_AX, void, env, tl)
 DEF_HELPER_2(divl_EAX, void, env, tl)
 DEF_HELPER_2(idivl_EAX, void, env, tl)
 #ifdef TARGET_X86_64
+DEF_HELPER_3(enter_probe, void, env, tl, i32)
 DEF_HELPER_2(divq_EAX, void, env, tl)
 DEF_HELPER_2(idivq_EAX, void, env, tl)
 #endif
