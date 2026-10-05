@@ -907,12 +907,18 @@ static void sse_denormal64(float64 a, float64 b, CPUX86State *env)
  * special cases right: for min and max Intel specifies that (-0,0),
  * (NaN, anything) and (anything, NaN) return the second argument.
  */
-#define FPU_MIN(size, a, b)                                     \
-    (sse_denormal ## size(a, b, env), \
-     float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
-#define FPU_MAX(size, a, b)                                     \
-    (sse_denormal ## size(a, b, env), \
-     float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
+/* NeverD contributors, 2026-10-04: comparisons already apply DAZ, but the
+ * selected raw payload must also become a signed zero when it is denormal. */
+#define FPU_MIN(size, a, b)                                                    \
+    (sse_denormal##size(a, b, env),                                            \
+     float##size##_squash_input_denormal(                                      \
+         float##size##_lt(a, b, &env->sse_status) ? (a) : (b),                 \
+         &env->sse_status))
+#define FPU_MAX(size, a, b)                                                    \
+    (sse_denormal##size(a, b, env),                                            \
+     float##size##_squash_input_denormal(                                      \
+         float##size##_lt(b, a, &env->sse_status) ? (a) : (b),                 \
+         &env->sse_status))
 
 SSE_HELPER_S(add, FPU_ADD)
 SSE_HELPER_S(sub, FPU_SUB)
@@ -1063,25 +1069,56 @@ void helper_cvtps2pd(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = s->ZMM_S(0);
     s1 = s->ZMM_S(1);
+    sse_denormal32(s0, s0, env);
     d->ZMM_D(0) = float32_to_float64(s0, &env->sse_status);
+    sse_denormal32(s1, s1, env);
     d->ZMM_D(1) = float32_to_float64(s1, &env->sse_status);
+}
+
+/* x86 FTZ tests tininess after precision rounding with an unbounded exponent.
+ * SoftFloat's direct FTZ branch flushes before this rounding. A gradual
+ * conversion instead exposes per-lane underflow and exact denormal results;
+ * their union is the x86 flush condition. Isolate new flags so a previous lane
+ * or instruction cannot flush a normal result. */
+static float32 sse_narrow64(float64 value, CPUX86State *env)
+{
+    float_status status;
+    float32 result;
+    int flags;
+
+    sse_denormal64(value, value, env);
+    if (!get_flush_to_zero(&env->sse_status)) {
+        return float64_to_float32(value, &env->sse_status);
+    }
+    status = env->sse_status;
+    set_flush_to_zero(false, &status);
+    set_float_exception_flags(0, &status);
+    result = float64_to_float32(value, &status);
+    flags = get_float_exception_flags(&status);
+    if ((flags & float_flag_underflow) || float32_is_denormal(result)) {
+        result = float32_set_sign(float32_zero, float64_is_neg(value));
+        flags |= float_flag_output_denormal;
+    }
+    float_raise(flags, &env->sse_status);
+    return result;
 }
 
 void helper_cvtpd2ps(CPUX86State *env, Reg *d, Reg *s)
 {
-    d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
-    d->ZMM_S(1) = float64_to_float32(s->ZMM_D(1), &env->sse_status);
+    d->ZMM_S(0) = sse_narrow64(s->ZMM_D(0), env);
+    d->ZMM_S(1) = sse_narrow64(s->ZMM_D(1), env);
     d->Q(1) = 0;
 }
 
 void helper_cvtss2sd(CPUX86State *env, Reg *d, Reg *s)
 {
+    sse_denormal32(s->ZMM_S(0), s->ZMM_S(0), env);
     d->ZMM_D(0) = float32_to_float64(s->ZMM_S(0), &env->sse_status);
 }
 
 void helper_cvtsd2ss(CPUX86State *env, Reg *d, Reg *s)
 {
-    d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
+    d->ZMM_S(0) = sse_narrow64(s->ZMM_D(0), env);
 }
 
 /* integer to float */
@@ -1490,25 +1527,33 @@ void helper_addsubpd(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 #define SSE_HELPER_CMP(name, F)                                         \
     void helper_ ## name ## ps(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal32(d->ZMM_S(0), s->ZMM_S(0), env);         \
         d->ZMM_L(0) = F(32, d->ZMM_S(0), s->ZMM_S(0));                  \
+        sse_denormal32(d->ZMM_S(1), s->ZMM_S(1), env);         \
         d->ZMM_L(1) = F(32, d->ZMM_S(1), s->ZMM_S(1));                  \
+        sse_denormal32(d->ZMM_S(2), s->ZMM_S(2), env);         \
         d->ZMM_L(2) = F(32, d->ZMM_S(2), s->ZMM_S(2));                  \
+        sse_denormal32(d->ZMM_S(3), s->ZMM_S(3), env);         \
         d->ZMM_L(3) = F(32, d->ZMM_S(3), s->ZMM_S(3));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## ss(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal32(d->ZMM_S(0), s->ZMM_S(0), env);         \
         d->ZMM_L(0) = F(32, d->ZMM_S(0), s->ZMM_S(0));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## pd(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal64(d->ZMM_D(0), s->ZMM_D(0), env);         \
         d->ZMM_Q(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
+        sse_denormal64(d->ZMM_D(1), s->ZMM_D(1), env);         \
         d->ZMM_Q(1) = F(64, d->ZMM_D(1), s->ZMM_D(1));                  \
     }                                                                   \
                                                                         \
     void helper_ ## name ## sd(CPUX86State *env, Reg *d, Reg *s)        \
     {                                                                   \
+        sse_denormal64(d->ZMM_D(0), s->ZMM_D(0), env);         \
         d->ZMM_Q(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
     }
 
@@ -1547,6 +1592,7 @@ void helper_ucomiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+    sse_denormal32(s0, s1, env);
     ret = float32_compare_quiet(s0, s1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1558,6 +1604,7 @@ void helper_comiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+    sse_denormal32(s0, s1, env);
     ret = float32_compare(s0, s1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1569,6 +1616,7 @@ void helper_ucomisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+    sse_denormal64(d0, d1, env);
     ret = float64_compare_quiet(d0, d1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }
@@ -1580,6 +1628,7 @@ void helper_comisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+    sse_denormal64(d0, d1, env);
     ret = float64_compare(d0, d1, &env->sse_status);
     CC_SRC = comis_eflags[ret + 1];
 }

@@ -1,0 +1,90 @@
+/* NeverD contributors, 2026-10-04: independent SSE MIN/MAX DAZ fixtures.
+ * This file follows the surrounding Unicorn unit-test license. */
+#ifdef SSE_MINMAX_VALUE
+SSE_MINMAX_VALUE(OperandAddress, 0x8000)
+SSE_MINMAX_VALUE(PageBytes, 0x1000)
+SSE_MINMAX_VALUE(OpcodeMap, 0x0f)
+SSE_MINMAX_VALUE(RegisterModRM, 0xc1)
+SSE_MINMAX_VALUE(AliasModRM, 0xc0)
+SSE_MINMAX_VALUE(MemoryModRM, 0x01)
+SSE_MINMAX_VALUE(InitialControl, 0x1f80)
+SSE_MINMAX_VALUE(DazBit, 0x40)
+SSE_MINMAX_VALUE(FlushBit, 0x8000)
+SSE_MINMAX_VALUE(RoundingShift, 13)
+SSE_MINMAX_VALUE(StickyDenormal, 0x02)
+SSE_MINMAX_VALUE(StickyAll, 0x3f)
+SSE_MINMAX_VALUE(PlainFlags, 0x202)
+SSE_MINMAX_VALUE(SetFlags, 0xed7)
+SSE_MINMAX_VALUE(FillByte, 0xa5)
+#endif
+#ifdef SSE_MINMAX_TEXT
+SSE_MINMAX_TEXT(CaseContext, "%s %s mode=%u control=%x flags=%x")
+#endif
+#ifdef SSE_MINMAX_OPERATION
+/* Name, prefix, opcode, double precision, active lanes, maximum. */
+SSE_MINMAX_OPERATION(MINSS, 0xf3, 0x5d, false, 1, false)
+SSE_MINMAX_OPERATION(MINSD, 0xf2, 0x5d, true, 1, false)
+SSE_MINMAX_OPERATION(MINPS, 0, 0x5d, false, 4, false)
+SSE_MINMAX_OPERATION(MINPD, 0x66, 0x5d, true, 2, false)
+SSE_MINMAX_OPERATION(MAXSS, 0xf3, 0x5f, false, 1, true)
+SSE_MINMAX_OPERATION(MAXSD, 0xf2, 0x5f, true, 1, true)
+SSE_MINMAX_OPERATION(MAXPS, 0, 0x5f, false, 4, true)
+SSE_MINMAX_OPERATION(MAXPD, 0x66, 0x5f, true, 2, true)
+#endif
+#ifdef SSE_MINMAX_INPUT
+SSE_MINMAX_INPUT(Zero, 0x00000000, 0x0000000000000000)
+SSE_MINMAX_INPUT(NegativeZero, 0x80000000, 0x8000000000000000)
+SSE_MINMAX_INPUT(MinSubnormal, 0x00000001, 0x0000000000000001)
+SSE_MINMAX_INPUT(NegativeMinSubnormal, 0x80000001, 0x8000000000000001)
+SSE_MINMAX_INPUT(MaxSubnormal, 0x007fffff, 0x000fffffffffffff)
+SSE_MINMAX_INPUT(NegativeMaxSubnormal, 0x807fffff, 0x800fffffffffffff)
+SSE_MINMAX_INPUT(MinNormal, 0x00800000, 0x0010000000000000)
+SSE_MINMAX_INPUT(NegativeMinNormal, 0x80800000, 0x8010000000000000)
+SSE_MINMAX_INPUT(One, 0x3f800000, 0x3ff0000000000000)
+SSE_MINMAX_INPUT(NegativeOne, 0xbf800000, 0xbff0000000000000)
+SSE_MINMAX_INPUT(QuietNaN, 0x7fc01234, 0x7ff8123456789abc)
+SSE_MINMAX_INPUT(SignalingNaN, 0x7f801234, 0x7ff0123456789abc)
+#endif
+#ifdef SSE_MINMAX_CASE
+/* Name, left, right, minimum/maximum/status without and with DAZ. */
+SSE_MINMAX_CASE(ZeroThenSmall, Zero, MinSubnormal, Zero, MinSubnormal, 0x02,
+                Zero, Zero, 0)
+SSE_MINMAX_CASE(SmallThenZero, MinSubnormal, Zero, Zero, MinSubnormal, 0x02,
+                Zero, Zero, 0)
+SSE_MINMAX_CASE(NegativeSmallThenZero, NegativeMinSubnormal, Zero,
+                NegativeMinSubnormal, Zero, 0x02, Zero, Zero, 0)
+SSE_MINMAX_CASE(ZeroThenNegativeSmall, Zero, NegativeMinSubnormal,
+                NegativeMinSubnormal, Zero, 0x02, NegativeZero, NegativeZero, 0)
+SSE_MINMAX_CASE(OppositeSubnormal, MaxSubnormal, NegativeMaxSubnormal,
+                NegativeMaxSubnormal, MaxSubnormal, 0x02, NegativeZero,
+                NegativeZero, 0)
+SSE_MINMAX_CASE(SmallThenOne, MinSubnormal, One, MinSubnormal, One, 0x02,
+                Zero, One, 0)
+SSE_MINMAX_CASE(NegativeOneThenSmall, NegativeOne, MinSubnormal, NegativeOne,
+                MinSubnormal, 0x02, NegativeOne, Zero, 0)
+SSE_MINMAX_CASE(QuietThenNegativeSmall, QuietNaN, NegativeMinSubnormal,
+                NegativeMinSubnormal, NegativeMinSubnormal, 0x01, NegativeZero,
+                NegativeZero, 0x01)
+SSE_MINMAX_CASE(NegativeSmallThenQuiet, NegativeMinSubnormal, QuietNaN,
+                QuietNaN, QuietNaN, 0x01, QuietNaN, QuietNaN, 0x01)
+SSE_MINMAX_CASE(SignalingThenSmall, SignalingNaN, MinSubnormal, MinSubnormal,
+                MinSubnormal, 0x01, Zero, Zero, 0x01)
+SSE_MINMAX_CASE(SmallThenSignaling, MinSubnormal, SignalingNaN, SignalingNaN,
+                SignalingNaN, 0x01, SignalingNaN, SignalingNaN, 0x01)
+SSE_MINMAX_CASE(ZeroThenNegativeZero, Zero, NegativeZero, NegativeZero,
+                NegativeZero, 0, NegativeZero, NegativeZero, 0)
+SSE_MINMAX_CASE(NegativeZeroThenZero, NegativeZero, Zero, Zero, Zero, 0,
+                Zero, Zero, 0)
+SSE_MINMAX_CASE(EqualNegativeSmall, NegativeMinSubnormal, NegativeMinSubnormal,
+                NegativeMinSubnormal, NegativeMinSubnormal, 0x02,
+                NegativeZero, NegativeZero, 0)
+SSE_MINMAX_CASE(QuietThenSignaling, QuietNaN, SignalingNaN, SignalingNaN,
+                SignalingNaN, 0x01, SignalingNaN, SignalingNaN, 0x01)
+SSE_MINMAX_CASE(NormalPair, One, NegativeOne, NegativeOne, One, 0,
+                NegativeOne, One, 0)
+SSE_MINMAX_CASE(NormalThenSmall, MinNormal, MaxSubnormal, MaxSubnormal,
+                MinNormal, 0x02, Zero, MinNormal, 0)
+SSE_MINMAX_CASE(NegativeNormalThenSmall, NegativeMinNormal, NegativeMaxSubnormal,
+                NegativeMinNormal, NegativeMaxSubnormal, 0x02,
+                NegativeMinNormal, NegativeZero, 0)
+#endif

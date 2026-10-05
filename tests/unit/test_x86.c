@@ -15255,6 +15255,158 @@ static void test_x86_sse_denormal_status(void)
     }
 }
 
+/* NeverD contributors, 2026-10-04: MIN/MAX must return the DAZ-normalized
+ * selected payload while retaining signed-zero, NaN and sticky-state rules. */
+static void test_x86_sse_minmax_daz(void)
+{
+#define SSE_MINMAX_VALUE(Name, Value) enum { Name = Value };
+#define SSE_MINMAX_TEXT(Name, Value) static const char Name[] = Value;
+#include "x86_sse_minmax_daz.def"
+#undef SSE_MINMAX_TEXT
+#undef SSE_MINMAX_VALUE
+    enum InputKind {
+#define SSE_MINMAX_INPUT(Name, Single, Double) Input##Name,
+#include "x86_sse_minmax_daz.def"
+#undef SSE_MINMAX_INPUT
+    };
+    static const struct {
+        uint32_t Single;
+        uint64_t Double;
+    } Inputs[] = {
+#define SSE_MINMAX_INPUT(Name, Single, Double) {Single, UINT64_C(Double)},
+#include "x86_sse_minmax_daz.def"
+#undef SSE_MINMAX_INPUT
+    };
+    static const struct {
+        const char *Name;
+        uint8_t Prefix, Opcode;
+        bool Double;
+        unsigned Lanes;
+        bool Maximum;
+    } Operations[] = {
+#define SSE_MINMAX_OPERATION(Name, Prefix, Opcode, Double, Lanes, Maximum)     \
+    {#Name, Prefix, Opcode, Double, Lanes, Maximum},
+#include "x86_sse_minmax_daz.def"
+#undef SSE_MINMAX_OPERATION
+    };
+    static const struct {
+        const char *Name;
+        enum InputKind Left, Right, Result[2][2];
+        uint32_t Status[2];
+    } Cases[] = {
+#define SSE_MINMAX_CASE(Name, Left, Right, Min, Max, Status, DazMin, DazMax,   \
+                        DazStatus)                                             \
+    {#Name,                                                                    \
+     Input##Left,                                                              \
+     Input##Right,                                                             \
+     {{Input##Min, Input##Max}, {Input##DazMin, Input##DazMax}},               \
+     {Status, DazStatus}},
+#include "x86_sse_minmax_daz.def"
+#undef SSE_MINMAX_CASE
+    };
+    const uint32_t Stickies[] = {0, StickyDenormal, StickyAll};
+    const uint32_t Flags[] = {PlainFlags, SetFlags};
+    enum { RegisterSource, MemorySource, AliasedSource, SourceCount };
+    for (size_t O = 0; O < sizeof(Operations) / sizeof(Operations[0]); ++O) {
+        for (unsigned Mode = 0; Mode < SourceCount; ++Mode) {
+            uint8_t Code[4];
+            unsigned Size = 0;
+            if (Operations[O].Prefix)
+                Code[Size++] = Operations[O].Prefix;
+            Code[Size++] = OpcodeMap;
+            Code[Size++] = Operations[O].Opcode;
+            Code[Size++] = Mode == MemorySource    ? MemoryModRM
+                           : Mode == AliasedSource ? AliasModRM
+                                                   : RegisterModRM;
+            uc_engine *UC;
+            uc_common_setup(&UC, UC_ARCH_X86, UC_MODE_64, (const char *)Code,
+                            Size);
+            const uint64_t Address = OperandAddress;
+            OK(uc_mem_map(UC, Address, PageBytes, UC_PROT_ALL));
+            OK(uc_reg_write(UC, UC_X86_REG_RCX, &Address));
+            for (size_t C = 0; C < sizeof(Cases) / sizeof(Cases[0]); ++C) {
+                if (Mode == AliasedSource && Cases[C].Left != Cases[C].Right)
+                    continue;
+                for (unsigned Daz = 0; Daz < 2; ++Daz) {
+                    union Vector {
+                        uint32_t Single[4];
+                        uint64_t Double[2];
+                    } Left, Right, Expected, Actual, Source;
+                    memset(&Left, FillByte, sizeof(Left));
+                    memset(&Right, FillByte, sizeof(Right));
+                    Expected = Left;
+                    const unsigned Result =
+                        Cases[C].Result[Daz][Operations[O].Maximum];
+                    for (unsigned Lane = 0; Lane < Operations[O].Lanes;
+                         ++Lane) {
+                        if (Operations[O].Double) {
+                            Left.Double[Lane] = Inputs[Cases[C].Left].Double;
+                            Right.Double[Lane] = Inputs[Cases[C].Right].Double;
+                            Expected.Double[Lane] = Inputs[Result].Double;
+                        } else {
+                            Left.Single[Lane] = Inputs[Cases[C].Left].Single;
+                            Right.Single[Lane] = Inputs[Cases[C].Right].Single;
+                            Expected.Single[Lane] = Inputs[Result].Single;
+                        }
+                    }
+                    for (unsigned Round = 0; Round < 4; ++Round) {
+                        for (unsigned Flush = 0; Flush < 2; ++Flush) {
+                            for (size_t S = 0;
+                                 S < sizeof(Stickies) / sizeof(Stickies[0]);
+                                 ++S) {
+                                for (size_t F = 0;
+                                     F < sizeof(Flags) / sizeof(Flags[0]);
+                                     ++F) {
+                                    uint32_t Control =
+                                        InitialControl | (Daz ? DazBit : 0) |
+                                        (Flush ? FlushBit : 0) |
+                                        (Round << RoundingShift) | Stickies[S];
+                                    OK(uc_reg_write(UC, UC_X86_REG_XMM0,
+                                                    &Left));
+                                    OK(uc_reg_write(UC, UC_X86_REG_XMM1,
+                                                    &Right));
+                                    OK(uc_reg_write(UC, UC_X86_REG_MXCSR,
+                                                    &Control));
+                                    OK(uc_reg_write(UC, UC_X86_REG_EFLAGS,
+                                                    &Flags[F]));
+                                    OK(uc_mem_write(UC, Address, &Right,
+                                                    sizeof(Right)));
+                                    OK(uc_emu_start(UC, code_start,
+                                                    code_start + Size, 0, 1));
+                                    uint32_t ActualControl = 0, ActualFlags = 0;
+                                    uint64_t PC = 0;
+                                    OK(uc_reg_read(UC, UC_X86_REG_XMM0,
+                                                   &Actual));
+                                    OK(uc_reg_read(UC, UC_X86_REG_XMM1,
+                                                   &Source));
+                                    OK(uc_reg_read(UC, UC_X86_REG_MXCSR,
+                                                   &ActualControl));
+                                    OK(uc_reg_read(UC, UC_X86_REG_EFLAGS,
+                                                   &ActualFlags));
+                                    OK(uc_reg_read(UC, UC_X86_REG_RIP, &PC));
+                                    TEST_CHECK(
+                                        memcmp(&Actual, &Expected,
+                                               sizeof(Actual)) == 0 &&
+                                        memcmp(&Source, &Right,
+                                               sizeof(Source)) == 0 &&
+                                        ActualControl ==
+                                            (Control | Cases[C].Status[Daz]) &&
+                                        ActualFlags == Flags[F] &&
+                                        PC == code_start + Size);
+                                    TEST_MSG(CaseContext, Operations[O].Name,
+                                             Cases[C].Name, Mode, Control,
+                                             Flags[F]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            OK(uc_close(UC));
+        }
+    }
+}
+
 static void test_x86_xsave_roundtrips_ymmh(void)
 {
     const uint8_t code[] = {
@@ -18819,6 +18971,7 @@ TEST_LIST = {
     {"test_x86_gather_rejects_overlapping_operands",
      test_x86_gather_rejects_overlapping_operands},
     {"test_x86_sse_denormal_status", test_x86_sse_denormal_status},
+    {"test_x86_sse_minmax_daz", test_x86_sse_minmax_daz},
     {"test_x86_mxcsr_tracks_simd_exceptions",
      test_x86_mxcsr_tracks_simd_exceptions},
     {"test_x86_mov_ss_rejects_null_selector_rpl_mismatch",

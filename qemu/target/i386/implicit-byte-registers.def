@@ -1,0 +1,5 @@
+/* Implicit x86 byte registers, NeverD contributors, 2026-10-05.
+ * SPDX-License-Identifier: LGPL-2.0-or-later */
+/* Name, physical register, bit offset, bit width. REX only remaps explicit
+ * byte-register operands; it cannot change these architectural identities. */
+X86_IMPLICIT_BYTE_REGISTER(AH, R_EAX, 8, 8)
