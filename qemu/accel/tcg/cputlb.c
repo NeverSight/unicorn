@@ -2165,9 +2165,204 @@ store_memop(void *haddr, uint64_t val, MemOp op)
     }
 }
 
-static inline void
-store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
-             TCGMemOpIdx oi, uintptr_t retaddr, MemOp op)
+/*
+ * Validate a page before an unaligned store starts modifying memory.  The
+ * ordinary slow path discovers invalid mappings one byte at a time, which is
+ * too late once an access has crossed from a valid page into an invalid one.
+ */
+static bool store_validate_page(CPUArchState *env, target_ulong addr,
+                                size_t size, uint64_t val, uintptr_t mmu_idx,
+                                uintptr_t retaddr, bool *synced,
+                                uintptr_t *index_out, CPUTLBEntry **entry_out,
+                                target_ulong *tlb_addr_out)
+{
+    struct uc_struct *uc = env->uc;
+    HOOK_FOREACH_VAR_DECLARE;
+    const size_t tlb_off = offsetof(CPUTLBEntry, addr_write);
+    uintptr_t index = tlb_index(env, mmu_idx, addr);
+    CPUTLBEntry *entry = tlb_entry(env, mmu_idx, addr);
+    target_ulong tlb_addr = tlb_addr_write(entry);
+    hwaddr paddr;
+    MemoryRegion *mr;
+    struct hook *hook;
+    bool handled;
+
+    if (!tlb_hit(env->uc, tlb_addr, addr)) {
+        if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
+                            addr & TARGET_PAGE_MASK)) {
+            tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                     retaddr);
+            index = tlb_index(env, mmu_idx, addr);
+            entry = tlb_entry(env, mmu_idx, addr);
+        }
+        tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+    }
+
+    paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
+    mr = uc->memory_mapping(uc, paddr);
+    if (mr == NULL) {
+        handled = false;
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_UNMAPPED)
+        {
+            if (hook->to_delete || !HOOK_BOUND_CHECK(hook, paddr)) {
+                continue;
+            }
+            if (!*synced && !uc->skip_sync_pc_on_exit && retaddr) {
+                cpu_restore_state(uc->cpu, retaddr, false);
+                *synced = true;
+            }
+            JIT_CALLBACK_GUARD_VAR(handled,
+                                   ((uc_cb_eventmem_t)hook->callback)(
+                                       uc, UC_MEM_WRITE_UNMAPPED, paddr, size,
+                                       val, hook->user_data));
+            if (handled || uc->stop_request) {
+                break;
+            }
+        }
+
+        if (!handled) {
+            uc->invalid_addr = paddr;
+            uc->invalid_error = UC_ERR_WRITE_UNMAPPED;
+            cpu_exit(uc->cpu);
+            return false;
+        }
+
+        uc->invalid_error = UC_ERR_OK;
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
+        tlb_addr = tlb_addr_write(entry);
+        if (!tlb_hit(env->uc, tlb_addr, addr)) {
+            if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
+                                addr & TARGET_PAGE_MASK)) {
+                tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                         retaddr);
+                index = tlb_index(env, mmu_idx, addr);
+                entry = tlb_entry(env, mmu_idx, addr);
+            }
+            tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+        }
+        paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
+        mr = uc->memory_mapping(uc, paddr);
+        if (mr == NULL) {
+            uc->invalid_addr = paddr;
+            uc->invalid_error = UC_ERR_MAP;
+            cpu_exit(uc->cpu);
+            return false;
+        }
+    }
+
+    if (!(mr->perms & UC_PROT_WRITE)) {
+        handled = false;
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT)
+        {
+            if (hook->to_delete || !HOOK_BOUND_CHECK(hook, paddr)) {
+                continue;
+            }
+            if (!*synced && !uc->skip_sync_pc_on_exit && retaddr) {
+                cpu_restore_state(uc->cpu, retaddr, false);
+                *synced = true;
+            }
+            JIT_CALLBACK_GUARD_VAR(handled, ((uc_cb_eventmem_t)hook->callback)(
+                                                uc, UC_MEM_WRITE_PROT, paddr,
+                                                size, val, hook->user_data));
+            if (handled || uc->stop_request) {
+                break;
+            }
+        }
+
+        if (!handled) {
+            uc->invalid_addr = paddr;
+            uc->invalid_error = UC_ERR_WRITE_PROT;
+            cpu_exit(uc->cpu);
+            return false;
+        }
+
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
+        tlb_addr = tlb_addr_write(entry);
+        if (!tlb_hit(env->uc, tlb_addr, addr)) {
+            if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
+                                addr & TARGET_PAGE_MASK)) {
+                tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                         retaddr);
+                index = tlb_index(env, mmu_idx, addr);
+                entry = tlb_entry(env, mmu_idx, addr);
+            }
+            tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+        }
+        paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
+        mr = uc->memory_mapping(uc, paddr);
+        if (mr == NULL || !(mr->perms & UC_PROT_WRITE)) {
+            uc->invalid_addr = paddr;
+            uc->invalid_error = UC_ERR_WRITE_PROT;
+            cpu_exit(uc->cpu);
+            return false;
+        }
+        uc->invalid_error = UC_ERR_OK;
+    }
+
+    if (uc->snapshot_level && mr->ram && mr->priority < uc->snapshot_level) {
+        mr = memory_cow(uc, mr, paddr & TARGET_PAGE_MASK, TARGET_PAGE_SIZE);
+        if (!mr) {
+            uc->invalid_addr = paddr;
+            uc->invalid_error = UC_ERR_NOMEM;
+            cpu_exit(uc->cpu);
+            return false;
+        }
+        tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx, retaddr);
+        index = tlb_index(env, mmu_idx, addr);
+        entry = tlb_entry(env, mmu_idx, addr);
+        tlb_addr = tlb_addr_write(entry);
+    }
+
+    *index_out = index;
+    *entry_out = entry;
+    *tlb_addr_out = tlb_addr;
+    return true;
+}
+
+#ifdef TARGET_X86_64
+/* Validate a complete x86 vector-store element before any lane is committed. */
+bool x86_evex_store_preflight(CPUArchState *env, target_ulong addr,
+                              size_t size, uint64_t val, uintptr_t retaddr)
+{
+    struct uc_struct *uc = env->uc;
+    const uintptr_t mmu_idx = cpu_mmu_index(env, false);
+    bool synced = false;
+    size_t consumed = 0;
+
+    while (consumed < size) {
+        const target_ulong part_addr = addr + consumed;
+        const size_t page_left =
+            TARGET_PAGE_SIZE - (part_addr & ~TARGET_PAGE_MASK);
+        const size_t part_size = MIN(size - consumed, page_left);
+        const uint64_t part_val = val >> (consumed * 8);
+        uintptr_t index;
+        CPUTLBEntry *entry;
+        target_ulong tlb_addr;
+
+        if (!store_validate_page(env, part_addr, part_size, part_val,
+                                 mmu_idx, retaddr, &synced, &index, &entry,
+                                 &tlb_addr)) {
+            if (!synced && !uc->skip_sync_pc_on_exit && retaddr) {
+                cpu_restore_state(uc->cpu, retaddr, false);
+            }
+            return false;
+        }
+        if (unlikely(tlb_addr & TLB_WATCHPOINT)) {
+            cpu_check_watchpoint(env_cpu(env), part_addr, part_size,
+                                 env_tlb(env)->d[mmu_idx].iotlb[index].attrs,
+                                 BP_MEM_WRITE, retaddr);
+        }
+        consumed += part_size;
+    }
+    return true;
+}
+#endif
+
+static inline void store_helper(CPUArchState *env, target_ulong addr,
+                                uint64_t val, TCGMemOpIdx oi, uintptr_t retaddr,
+                                MemOp op)
 {
     struct uc_struct *uc = env->uc;
     HOOK_FOREACH_VAR_DECLARE;
@@ -2188,16 +2383,16 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
 
     /* Handle CPU specific unaligned behaviour */
     if (addr & ((1 << a_bits) - 1)) {
-        cpu_unaligned_access(env_cpu(env), addr, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
+        cpu_unaligned_access(env_cpu(env), addr, MMU_DATA_STORE, mmu_idx,
+                             retaddr);
     }
 
     /* If the TLB entry is for a different page, reload and try again.  */
     if (!tlb_hit(env->uc, tlb_addr, addr)) {
         if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-            addr & TARGET_PAGE_MASK)) {
-            tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                     mmu_idx, retaddr);
+                            addr & TARGET_PAGE_MASK)) {
+            tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                     retaddr);
             index = tlb_index(env, mmu_idx, addr);
             entry = tlb_entry(env, mmu_idx, addr);
         }
@@ -2210,7 +2405,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
         // Unicorn: callback on memory write
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE)
+        {
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
@@ -2220,7 +2416,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 synced = true;
             }
             write_hook_called = true;
-            JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
+            JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(
+                uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
                 break;
@@ -2236,8 +2433,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         if (!tlb_hit(env->uc, tlb_addr, addr)) {
             if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
                                 addr & TARGET_PAGE_MASK)) {
-                tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                         mmu_idx, retaddr);
+                tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                         retaddr);
                 index = tlb_index(env, mmu_idx, addr);
                 entry = tlb_entry(env, mmu_idx, addr);
             }
@@ -2250,7 +2447,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     // Unicorn: callback on invalid memory
     if (mr == NULL) {
         handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_UNMAPPED) {
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_UNMAPPED)
+        {
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
@@ -2260,7 +2458,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 synced = true;
             }
             JIT_CALLBACK_GUARD_VAR(handled,
-                                   ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_UNMAPPED, paddr, size, val, hook->user_data));
+                                   ((uc_cb_eventmem_t)hook->callback)(
+                                       uc, UC_MEM_WRITE_UNMAPPED, paddr, size,
+                                       val, hook->user_data));
             if (handled)
                 break;
 
@@ -2273,17 +2473,19 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             // save error & quit
             uc->invalid_addr = paddr;
             uc->invalid_error = UC_ERR_WRITE_UNMAPPED;
-            // printf("***** Invalid memory write at " TARGET_FMT_lx "\n", addr);
+            // printf("***** Invalid memory write at " TARGET_FMT_lx "\n",
+            // addr);
             cpu_exit(uc->cpu);
             return;
         } else {
             uc->invalid_error = UC_ERR_OK;
-            /* If the TLB entry is for a different page, reload and try again.  */
+            /* If the TLB entry is for a different page, reload and try again.
+             */
             if (!tlb_hit(env->uc, tlb_addr, addr)) {
                 if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                    addr & TARGET_PAGE_MASK)) {
-                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
+                                    addr & TARGET_PAGE_MASK)) {
+                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                             retaddr);
                     index = tlb_index(env, mmu_idx, addr);
                     entry = tlb_entry(env, mmu_idx, addr);
                 }
@@ -2300,10 +2502,11 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     }
 
     // Unicorn: callback on non-writable memory
-    if (mr != NULL && !(mr->perms & UC_PROT_WRITE)) {  //non-writable
+    if (mr != NULL && !(mr->perms & UC_PROT_WRITE)) { // non-writable
         // printf("not writable memory???\n");
         handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT) {
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT)
+        {
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
@@ -2312,8 +2515,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }
-            JIT_CALLBACK_GUARD_VAR(handled,
-                                   ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_PROT, paddr, size, val, hook->user_data));
+            JIT_CALLBACK_GUARD_VAR(handled, ((uc_cb_eventmem_t)hook->callback)(
+                                                uc, UC_MEM_WRITE_PROT, paddr,
+                                                size, val, hook->user_data));
             if (handled)
                 break;
 
@@ -2331,8 +2535,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             if (!tlb_hit(env->uc, tlb_addr, addr)) {
                 if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
                                     addr & TARGET_PAGE_MASK)) {
-                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
+                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx,
+                             retaddr);
                     index = tlb_index(env, mmu_idx, addr);
                     entry = tlb_entry(env, mmu_idx, addr);
                 }
@@ -2350,7 +2554,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         } else {
             uc->invalid_addr = paddr;
             uc->invalid_error = UC_ERR_WRITE_PROT;
-            // printf("***** Invalid memory write (ro) at " TARGET_FMT_lx "\n", addr);
+            // printf("***** Invalid memory write (ro) at " TARGET_FMT_lx "\n",
+            // addr);
             cpu_exit(uc->cpu);
             return;
         }
@@ -2365,8 +2570,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             return;
         }
         /* refill tlb after CoW */
-        tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                 mmu_idx, retaddr);
+        tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE, mmu_idx, retaddr);
         index = tlb_index(env, mmu_idx, addr);
         entry = tlb_entry(env, mmu_idx, addr);
         tlb_addr = tlb_addr_write(entry);
@@ -2387,8 +2591,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         /* Handle watchpoints.  */
         if (unlikely(tlb_addr & TLB_WATCHPOINT)) {
             /* On watchpoint hit, this will longjmp out.  */
-            cpu_check_watchpoint(env_cpu(env), addr, size,
-                                 iotlbentry->attrs, BP_MEM_WRITE, retaddr);
+            cpu_check_watchpoint(env_cpu(env), addr, size, iotlbentry->attrs,
+                                 BP_MEM_WRITE, retaddr);
         }
 
         need_swap = size > 1 && (tlb_addr & TLB_BSWAP);
@@ -2407,7 +2611,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
 
         /* Handle clean RAM pages.  */
         if (tlb_addr & TLB_NOTDIRTY) {
-            notdirty_write(env_cpu(env), addr, size, iotlbentry, retaddr, entry);
+            notdirty_write(env_cpu(env), addr, size, iotlbentry, retaddr,
+                           entry);
         }
 
         haddr = (void *)((uintptr_t)addr + entry->addend);
@@ -2426,14 +2631,14 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     }
 
     /* Handle slow unaligned access (it spans two pages or IO).  */
-    if (size > 1
-        && unlikely((addr & ~TARGET_PAGE_MASK) + size - 1
-                     >= TARGET_PAGE_SIZE)) {
+    if (size > 1 &&
+        unlikely((addr & ~TARGET_PAGE_MASK) + size - 1 >= TARGET_PAGE_SIZE)) {
         int i;
         uintptr_t index2;
         CPUTLBEntry *entry2;
         target_ulong page2, tlb_addr2;
         size_t size2;
+        uint64_t val2;
         int old_size;
 
     do_unaligned_access:
@@ -2444,17 +2649,14 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
          */
         page2 = (addr + size) & TARGET_PAGE_MASK;
         size2 = (addr + size) & ~TARGET_PAGE_MASK;
-        index2 = tlb_index(env, mmu_idx, page2);
-        entry2 = tlb_entry(env, mmu_idx, page2);
-        tlb_addr2 = tlb_addr_write(entry2);
-        if (!tlb_hit_page(uc, tlb_addr2, page2)) {
-            if (!victim_tlb_hit(env, mmu_idx, index2, tlb_off, page2)) {
-                tlb_fill(env_cpu(env), page2, size2, MMU_DATA_STORE,
-                         mmu_idx, retaddr);
-                index2 = tlb_index(env, mmu_idx, page2);
-                entry2 = tlb_entry(env, mmu_idx, page2);
-            }
-            tlb_addr2 = tlb_addr_write(entry2);
+        if (memop_big_endian(op)) {
+            val2 = val;
+        } else {
+            val2 = val >> ((size - size2) * 8);
+        }
+        if (!store_validate_page(env, page2, size2, val2, mmu_idx, retaddr,
+                                 &synced, &index2, &entry2, &tlb_addr2)) {
+            return;
         }
 
         /*

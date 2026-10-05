@@ -96,6 +96,12 @@ static void reg_reset(struct uc_struct *uc)
 
     memset(env->opmask_regs, 0, sizeof(env->opmask_regs));
     memset(env->zmmh_regs, 0, sizeof(env->zmmh_regs));
+    memset(env->xtilecfg, 0, sizeof(env->xtilecfg));
+    memset(env->xtiledata, 0, sizeof(env->xtiledata));
+#ifdef TARGET_X86_64
+    memset(env->apx_regs, 0, sizeof(env->apx_regs));
+#endif
+    env->xstate_bv = 0;
     memset(env->dr, 0, sizeof(env->dr));
     env->dr[6] = DR6_FIXED_1;
     env->dr[7] = DR7_FIXED_1;
@@ -116,6 +122,7 @@ static void reg_reset(struct uc_struct *uc)
     env->mcg_status = 0;
     env->msr_ia32_misc_enable = 0;
     env->msr_ia32_feature_control = 0;
+    env->msr_ia32_pasid = 0;
 
     env->msr_fixed_ctr_ctrl = 0;
     env->msr_global_ctrl = 0;
@@ -234,6 +241,18 @@ static int x86_msr_write(CPUX86State *env, uc_x86_msr *msr)
     return 0;
 }
 
+static bool x86_tilecfg_is_init_state(const uint8_t tilecfg[64])
+{
+    unsigned int i;
+
+    for (i = 0; i < 64; i++) {
+        if (tilecfg[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 DEFAULT_VISIBILITY
 uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
                 size_t *size)
@@ -300,6 +319,32 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
         *(uint16_t *)value = fptag;
         return ret;
     }
+    case UC_X86_REG_K0:
+    case UC_X86_REG_K1:
+    case UC_X86_REG_K2:
+    case UC_X86_REG_K3:
+    case UC_X86_REG_K4:
+    case UC_X86_REG_K5:
+    case UC_X86_REG_K6:
+    case UC_X86_REG_K7:
+        CHECK_REG_TYPE(uint64_t);
+        *(uint64_t *)value = env->opmask_regs[regid - UC_X86_REG_K0];
+        return ret;
+    case UC_X86_REG_TILECFG:
+        CHECK_REG_TYPE(uint8_t[64]);
+        memcpy(value, env->xtilecfg, sizeof(env->xtilecfg));
+        return ret;
+    case UC_X86_REG_TMM0:
+    case UC_X86_REG_TMM1:
+    case UC_X86_REG_TMM2:
+    case UC_X86_REG_TMM3:
+    case UC_X86_REG_TMM4:
+    case UC_X86_REG_TMM5:
+    case UC_X86_REG_TMM6:
+    case UC_X86_REG_TMM7:
+        CHECK_REG_TYPE(uint8_t[1024]);
+        memcpy(value, env->xtiledata[regid - UC_X86_REG_TMM0], 1024);
+        return ret;
     case UC_X86_REG_XMM0:
     case UC_X86_REG_XMM1:
     case UC_X86_REG_XMM2:
@@ -366,6 +411,29 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
         *(uint16_t *)value = env->fpop;
         return ret;
     }
+
+#ifdef TARGET_X86_64
+    if (mode == UC_MODE_64) {
+        if (regid >= UC_X86_REG_R16B && regid <= UC_X86_REG_R31B) {
+            CHECK_REG_TYPE(uint8_t);
+            *(uint8_t *)value =
+                READ_BYTE_L(env->apx_regs[regid - UC_X86_REG_R16B]);
+            return ret;
+        }
+        if (regid >= UC_X86_REG_R16W && regid <= UC_X86_REG_R31W) {
+            CHECK_REG_TYPE(uint16_t);
+            *(uint16_t *)value =
+                READ_WORD(env->apx_regs[regid - UC_X86_REG_R16W]);
+            return ret;
+        }
+        if (regid >= UC_X86_REG_R16D && regid <= UC_X86_REG_R31D) {
+            CHECK_REG_TYPE(uint32_t);
+            *(uint32_t *)value =
+                READ_DWORD(env->apx_regs[regid - UC_X86_REG_R16D]);
+            return ret;
+        }
+    }
+#endif
 
     switch (mode) {
     default:
@@ -596,6 +664,10 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = (uint32_t)env->segs[R_FS].base;
             break;
+        case UC_X86_REG_XCR0:
+            CHECK_REG_TYPE(uint64_t);
+            *(uint64_t *)value = env->xcr0;
+            break;
         }
         break;
 
@@ -603,6 +675,25 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
     case UC_MODE_64:
         switch (regid) {
         default:
+            break;
+        case UC_X86_REG_R16:
+        case UC_X86_REG_R17:
+        case UC_X86_REG_R18:
+        case UC_X86_REG_R19:
+        case UC_X86_REG_R20:
+        case UC_X86_REG_R21:
+        case UC_X86_REG_R22:
+        case UC_X86_REG_R23:
+        case UC_X86_REG_R24:
+        case UC_X86_REG_R25:
+        case UC_X86_REG_R26:
+        case UC_X86_REG_R27:
+        case UC_X86_REG_R28:
+        case UC_X86_REG_R29:
+        case UC_X86_REG_R30:
+        case UC_X86_REG_R31:
+            CHECK_REG_TYPE(uint64_t);
+            *(uint64_t *)value = env->apx_regs[regid - UC_X86_REG_R16];
             break;
         case UC_X86_REG_CR0:
         case UC_X86_REG_CR1:
@@ -1094,6 +1185,10 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             CHECK_REG_TYPE(uint64_t);
             *(uint64_t *)value = (uint64_t)env->segs[R_GS].base;
             break;
+        case UC_X86_REG_XCR0:
+            CHECK_REG_TYPE(uint64_t);
+            *(uint64_t *)value = env->xcr0;
+            break;
         }
         break;
 #endif
@@ -1149,6 +1244,39 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
 
         return ret;
     }
+    case UC_X86_REG_K0:
+    case UC_X86_REG_K1:
+    case UC_X86_REG_K2:
+    case UC_X86_REG_K3:
+    case UC_X86_REG_K4:
+    case UC_X86_REG_K5:
+    case UC_X86_REG_K6:
+    case UC_X86_REG_K7:
+        CHECK_REG_TYPE(uint64_t);
+        env->opmask_regs[regid - UC_X86_REG_K0] = *(const uint64_t *)value;
+        env->xstate_bv |= XSTATE_OPMASK_MASK;
+        return ret;
+    case UC_X86_REG_TILECFG:
+        CHECK_REG_TYPE(uint8_t[64]);
+        memcpy(env->xtilecfg, value, sizeof(env->xtilecfg));
+        if (x86_tilecfg_is_init_state(env->xtilecfg)) {
+            env->xstate_bv &= ~XSTATE_XTILE_CFG_MASK;
+        } else {
+            env->xstate_bv |= XSTATE_XTILE_CFG_MASK;
+        }
+        return ret;
+    case UC_X86_REG_TMM0:
+    case UC_X86_REG_TMM1:
+    case UC_X86_REG_TMM2:
+    case UC_X86_REG_TMM3:
+    case UC_X86_REG_TMM4:
+    case UC_X86_REG_TMM5:
+    case UC_X86_REG_TMM6:
+    case UC_X86_REG_TMM7:
+        CHECK_REG_TYPE(uint8_t[1024]);
+        memcpy(env->xtiledata[regid - UC_X86_REG_TMM0], value, 1024);
+        env->xstate_bv |= XSTATE_XTILE_DATA_MASK;
+        return ret;
     case UC_X86_REG_XMM0:
     case UC_X86_REG_XMM1:
     case UC_X86_REG_XMM2:
@@ -1215,6 +1343,31 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
         env->fpop = *(uint16_t *)value;
         return ret;
     }
+
+#ifdef TARGET_X86_64
+    if (mode == UC_MODE_64) {
+        if (regid >= UC_X86_REG_R16B && regid <= UC_X86_REG_R31B) {
+            CHECK_REG_TYPE(uint8_t);
+            WRITE_BYTE_L(env->apx_regs[regid - UC_X86_REG_R16B],
+                         *(const uint8_t *)value);
+            env->xstate_bv |= XSTATE_APX_MASK;
+            return ret;
+        }
+        if (regid >= UC_X86_REG_R16W && regid <= UC_X86_REG_R31W) {
+            CHECK_REG_TYPE(uint16_t);
+            WRITE_WORD(env->apx_regs[regid - UC_X86_REG_R16W],
+                       *(const uint16_t *)value);
+            env->xstate_bv |= XSTATE_APX_MASK;
+            return ret;
+        }
+        if (regid >= UC_X86_REG_R16D && regid <= UC_X86_REG_R31D) {
+            CHECK_REG_TYPE(uint32_t);
+            env->apx_regs[regid - UC_X86_REG_R16D] = *(const uint32_t *)value;
+            env->xstate_bv |= XSTATE_APX_MASK;
+            return ret;
+        }
+    }
+#endif
 
     switch (mode) {
     default:
@@ -1484,6 +1637,11 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             env->segs[R_GS].base = *(uint32_t *)value;
             continue;
             */
+        case UC_X86_REG_XCR0:
+            CHECK_REG_TYPE(uint64_t);
+            env->xcr0 = *(uint64_t *)value;
+            cpu_sync_bndcs_hflags(env);
+            break;
         }
         break;
 
@@ -1491,6 +1649,26 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
     case UC_MODE_64:
         switch (regid) {
         default:
+            break;
+        case UC_X86_REG_R16:
+        case UC_X86_REG_R17:
+        case UC_X86_REG_R18:
+        case UC_X86_REG_R19:
+        case UC_X86_REG_R20:
+        case UC_X86_REG_R21:
+        case UC_X86_REG_R22:
+        case UC_X86_REG_R23:
+        case UC_X86_REG_R24:
+        case UC_X86_REG_R25:
+        case UC_X86_REG_R26:
+        case UC_X86_REG_R27:
+        case UC_X86_REG_R28:
+        case UC_X86_REG_R29:
+        case UC_X86_REG_R30:
+        case UC_X86_REG_R31:
+            CHECK_REG_TYPE(uint64_t);
+            env->apx_regs[regid - UC_X86_REG_R16] = *(const uint64_t *)value;
+            env->xstate_bv |= XSTATE_APX_MASK;
             break;
         case UC_X86_REG_CR0:
             CHECK_REG_TYPE(uint64_t);
@@ -1916,6 +2094,9 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             ZMMReg *reg = &env->xmm_regs[regid - UC_X86_REG_XMM0];
             reg->ZMM_Q(0) = src[0];
             reg->ZMM_Q(1) = src[1];
+            if (regid >= UC_X86_REG_XMM16) {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_YMM8:
@@ -1949,6 +2130,9 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             reg->ZMM_Q(1) = src[1];
             reg->ZMM_Q(2) = src[2];
             reg->ZMM_Q(3) = src[3];
+            if (regid >= UC_X86_REG_YMM16) {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_ZMM0:
@@ -1994,6 +2178,11 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             reg->ZMM_Q(5) = src[5];
             reg->ZMM_Q(6) = src[6];
             reg->ZMM_Q(7) = src[7];
+            if (regid <= UC_X86_REG_ZMM15) {
+                env->xstate_bv |= XSTATE_ZMM_Hi256_MASK;
+            } else {
+                env->xstate_bv |= XSTATE_Hi16_ZMM_MASK;
+            }
             break;
         }
         case UC_X86_REG_FS_BASE:
@@ -2004,6 +2193,11 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             CHECK_REG_TYPE(uint64_t);
             env->segs[R_GS].base = *(uint64_t *)value;
             return 0;
+        case UC_X86_REG_XCR0:
+            CHECK_REG_TYPE(uint64_t);
+            env->xcr0 = *(uint64_t *)value;
+            cpu_sync_bndcs_hflags(env);
+            break;
         }
         break;
 #endif

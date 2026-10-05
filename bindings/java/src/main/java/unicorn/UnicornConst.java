@@ -149,6 +149,9 @@ public interface UnicornConst {
     public static final int UC_CTL_TLB_TYPE = 12;
     public static final int UC_CTL_TCG_BUFFER_SIZE = 13;
     public static final int UC_CTL_CONTEXT_MODE = 14;
+    public static final int UC_CTL_PAUTH_SIGN = 15;
+    public static final int UC_CTL_PAUTH_STRIP = 16;
+    public static final int UC_CTL_PAUTH_AUTH = 17;
     public static final int UC_CTL_CONTEXT_CPU = 1;
     public static final int UC_CTL_CONTEXT_MEMORY = 2;
 

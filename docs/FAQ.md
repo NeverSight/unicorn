@@ -231,6 +231,9 @@ Taken from [#1789](https://github.com/unicorn-engine/unicorn/issues/1789).
     reg.crm = 0b0001;
     reg.op2 = 0b000;
 
+    err = uc_reg_read(uc, UC_ARM64_REG_CP_REG, &reg);
+    assert(err == UC_ERR_OK);
+
     // HCR.API
     reg.val |= (1ULL<<41);
 

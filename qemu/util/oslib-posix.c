@@ -29,7 +29,7 @@
 #include <uc_priv.h>
 #include "qemu/osdep.h"
 
-#ifndef _WIN32
+#ifdef CONFIG_LINUX
 #include <malloc.h>
 #endif
 

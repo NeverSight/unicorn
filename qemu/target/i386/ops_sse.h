@@ -864,20 +864,55 @@ void helper_gf2p8affineinvqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
         d->ZMM_D(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
     }
 
-#define FPU_ADD(size, a, b) float ## size ## _add(a, b, &env->sse_status)
-#define FPU_SUB(size, a, b) float ## size ## _sub(a, b, &env->sse_status)
-#define FPU_MUL(size, a, b) float ## size ## _mul(a, b, &env->sse_status)
-#define FPU_DIV(size, a, b) float ## size ## _div(a, b, &env->sse_status)
-#define FPU_SQRT(size, a, b) float ## size ## _sqrt(b, &env->sse_status)
+/* NeverD contributors, 2026-09-30: SSE reports a denormal input even when DAZ is disabled. SoftFloat only
+ * reports flushed inputs, since other target ISAs have different rules.
+ * NaN propagation takes priority over the denormal-operand exception. */
+static void sse_denormal32(float32 a, float32 b, CPUX86State *env)
+{
+    if (!(env->mxcsr & SSE_DAZ) &&
+        !float32_is_any_nan(a) && !float32_is_any_nan(b) &&
+        (float32_is_denormal(a) || float32_is_denormal(b))) {
+        float_raise(float_flag_input_denormal, &env->sse_status);
+    }
+}
+
+static void sse_denormal64(float64 a, float64 b, CPUX86State *env)
+{
+    if (!(env->mxcsr & SSE_DAZ) &&
+        !float64_is_any_nan(a) && !float64_is_any_nan(b) &&
+        (float64_is_denormal(a) || float64_is_denormal(b))) {
+        float_raise(float_flag_input_denormal, &env->sse_status);
+    }
+}
+
+#define FPU_ADD(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _add(a, b, &env->sse_status))
+#define FPU_SUB(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _sub(a, b, &env->sse_status))
+#define FPU_MUL(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _mul(a, b, &env->sse_status))
+#define FPU_DIV(size, a, b) \
+    ((float ## size ## _is_zero(b) ? (void)0 : \
+      sse_denormal ## size(a, b, env)), \
+     float ## size ## _div(a, b, &env->sse_status))
+#define FPU_SQRT(size, a, b) \
+    ((float ## size ## _is_neg(b) ? (void)0 : \
+      sse_denormal ## size(b, b, env)), \
+     float ## size ## _sqrt(b, &env->sse_status))
 
 /* Note that the choice of comparison op here is important to get the
  * special cases right: for min and max Intel specifies that (-0,0),
  * (NaN, anything) and (anything, NaN) return the second argument.
  */
 #define FPU_MIN(size, a, b)                                     \
-    (float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
 #define FPU_MAX(size, a, b)                                     \
-    (float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
 
 SSE_HELPER_S(add, FPU_ADD)
 SSE_HELPER_S(sub, FPU_SUB)
@@ -1093,8 +1128,9 @@ void helper_cvtph2ps(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 /*
  * F16C: convert four packed single-precision values to four half-precision
  * values, written to the low 64 bits of d (the upper 64 bits are zeroed).  imm
- * selects the rounding mode (bit 2 = use MXCSR); the conversion is deterministic
- * and used identically by every caller, so we always round per the SSE status.
+ * selects the rounding mode (bit 2 = use MXCSR, bits 7:3 are ignored); the
+ * conversion is deterministic and used identically by every caller, so we
+ * always round per the SSE status.
  */
 void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
 {
@@ -1102,7 +1138,6 @@ void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
     float32 f2 = s->ZMM_S(2), f3 = s->ZMM_S(3);
     signed char previous_rounding_mode = env->sse_status.float_rounding_mode;
     flag previous_ftz = get_flush_to_zero(&env->sse_status);
-    int previous_flags = get_float_exception_flags(&env->sse_status);
 
     if (!(imm & (1 << 2))) {
         switch (imm & 3) {
@@ -1128,12 +1163,6 @@ void helper_cvtps2ph(CPUX86State *env, ZMMReg *d, ZMMReg *s, uint32_t imm)
     d->ZMM_W(2) = float32_to_float16(f2, true, &env->sse_status);
     d->ZMM_W(3) = float32_to_float16(f3, true, &env->sse_status);
     d->ZMM_Q(1) = 0;
-    if (imm & (1 << 3)) {
-        int flags = get_float_exception_flags(&env->sse_status);
-        flags = (flags & ~float_flag_inexact) |
-                (previous_flags & float_flag_inexact);
-        set_float_exception_flags(flags, &env->sse_status);
-    }
     set_flush_to_zero(previous_ftz, &env->sse_status);
     env->sse_status.float_rounding_mode = previous_rounding_mode;
 }

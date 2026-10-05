@@ -106,4 +106,10 @@ class UcReg512(UcLargeReg):
     _fields_ = [('qwords', ctypes.c_uint64 * 8)]
 
 
-__all__ = ['uc_err', 'uc_engine', 'uc_context', 'uc_hook_h', 'UcReg', 'UcTupledReg', 'UcLargeReg', 'UcReg128', 'UcReg256', 'UcReg512']
+class UcReg8192(UcLargeReg):
+    """Large register holding a 8192-bit AMX tile value."""
+
+    _fields_ = [('qwords', ctypes.c_uint64 * 128)]
+
+
+__all__ = ['uc_err', 'uc_engine', 'uc_context', 'uc_hook_h', 'UcReg', 'UcTupledReg', 'UcLargeReg', 'UcReg128', 'UcReg256', 'UcReg512', 'UcReg8192']

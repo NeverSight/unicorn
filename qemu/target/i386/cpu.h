@@ -167,6 +167,9 @@ typedef enum X86Seg {
 #define HF_MPX_EN_SHIFT     25 /* MPX Enabled (CR4+XCR0+BNDCFGx) */
 #define HF_MPX_IU_SHIFT     26 /* BND registers in-use */
 #define HF_AVX_EN_SHIFT     27 /* CR4.OSXSAVE and XCR0.SSE/YMM */
+#define HF_APX_EN_SHIFT     28 /* APX_F, CR4.OSXSAVE and XCR0[19] */
+#define HF_AVX512_EN_SHIFT  29 /* AVX-512F, CR4.OSXSAVE and full XCR0 state */
+#define HF_AMX_EN_SHIFT     30 /* AMX-TILE, CR4.OSXSAVE and XCR0[18:17] */
 
 #define HF_CPL_MASK          (3 << HF_CPL_SHIFT)
 #define HF_INHIBIT_IRQ_MASK  (1 << HF_INHIBIT_IRQ_SHIFT)
@@ -193,6 +196,9 @@ typedef enum X86Seg {
 #define HF_MPX_EN_MASK       (1 << HF_MPX_EN_SHIFT)
 #define HF_MPX_IU_MASK       (1 << HF_MPX_IU_SHIFT)
 #define HF_AVX_EN_MASK       (1 << HF_AVX_EN_SHIFT)
+#define HF_APX_EN_MASK       (1 << HF_APX_EN_SHIFT)
+#define HF_AVX512_EN_MASK    (1 << HF_AVX512_EN_SHIFT)
+#define HF_AMX_EN_MASK       (1U << HF_AMX_EN_SHIFT)
 
 /* hflags2 */
 
@@ -458,6 +464,7 @@ typedef enum X86Seg {
 #define MSR_VM_HSAVE_PA                 0xc0010117
 
 #define MSR_IA32_BNDCFGS                0x00000d90
+#define MSR_IA32_PASID                  0x00000d93
 #define MSR_IA32_XSS                    0x00000da0
 #define MSR_IA32_UMWAIT_CONTROL         0xe1
 
@@ -489,6 +496,9 @@ typedef enum X86Seg {
 #define XSTATE_ZMM_Hi256_BIT            6
 #define XSTATE_Hi16_ZMM_BIT             7
 #define XSTATE_PKRU_BIT                 9
+#define XSTATE_XTILE_CFG_BIT            17
+#define XSTATE_XTILE_DATA_BIT           18
+#define XSTATE_APX_BIT                  19
 
 #define XSTATE_FP_MASK                  (1ULL << XSTATE_FP_BIT)
 #define XSTATE_SSE_MASK                 (1ULL << XSTATE_SSE_BIT)
@@ -499,6 +509,9 @@ typedef enum X86Seg {
 #define XSTATE_ZMM_Hi256_MASK           (1ULL << XSTATE_ZMM_Hi256_BIT)
 #define XSTATE_Hi16_ZMM_MASK            (1ULL << XSTATE_Hi16_ZMM_BIT)
 #define XSTATE_PKRU_MASK                (1ULL << XSTATE_PKRU_BIT)
+#define XSTATE_XTILE_CFG_MASK           (1ULL << XSTATE_XTILE_CFG_BIT)
+#define XSTATE_XTILE_DATA_MASK          (1ULL << XSTATE_XTILE_DATA_BIT)
+#define XSTATE_APX_MASK                 (1ULL << XSTATE_APX_BIT)
 
 /* CPUID feature words */
 typedef enum FeatureWord {
@@ -508,6 +521,9 @@ typedef enum FeatureWord {
     FEAT_7_0_ECX,       /* CPUID[EAX=7,ECX=0].ECX */
     FEAT_7_0_EDX,       /* CPUID[EAX=7,ECX=0].EDX */
     FEAT_7_1_EAX,       /* CPUID[EAX=7,ECX=1].EAX */
+    FEAT_7_1_ECX,       /* CPUID[EAX=7,ECX=1].ECX */
+    FEAT_7_1_EDX,       /* CPUID[EAX=7,ECX=1].EDX */
+    FEAT_29_0_EBX,      /* CPUID[EAX=0x29,ECX=0].EBX */
     FEAT_8000_0001_EDX, /* CPUID[8000_0001].EDX */
     FEAT_8000_0001_ECX, /* CPUID[8000_0001].ECX */
     FEAT_8000_0007_EDX, /* CPUID[8000_0007].EDX */
@@ -536,6 +552,7 @@ typedef enum FeatureWord {
     FEAT_VMX_EPT_VPID_CAPS,
     FEAT_VMX_BASIC,
     FEAT_VMX_VMFUNC,
+    FEAT_1E_1_EAX,      /* CPUID[EAX=0x1e,ECX=1].EAX */
     FEATURE_WORDS,
 } FeatureWord;
 
@@ -765,11 +782,19 @@ typedef uint64_t FeatureWordArray[FEATURE_WORDS];
 #define CPUID_7_0_ECX_MOVDIRI           (1U << 27)
 /* Move 64 Bytes as Direct Store Instruction */
 #define CPUID_7_0_ECX_MOVDIR64B         (1U << 28)
+/* Enqueue Stores */
+#define CPUID_7_0_ECX_ENQCMD            (1U << 29)
 
 /* AVX512 Neural Network Instructions */
 #define CPUID_7_0_EDX_AVX512_4VNNIW     (1U << 2)
 /* AVX512 Multiply Accumulation Single Precision */
 #define CPUID_7_0_EDX_AVX512_4FMAPS     (1U << 3)
+/* Advanced Matrix Extensions BFloat16 */
+#define CPUID_7_0_EDX_AMX_BF16          (1U << 22)
+/* Advanced Matrix Extensions Tile */
+#define CPUID_7_0_EDX_AMX_TILE          (1U << 24)
+/* Advanced Matrix Extensions INT8 */
+#define CPUID_7_0_EDX_AMX_INT8          (1U << 25)
 /* Speculation Control */
 #define CPUID_7_0_EDX_SPEC_CTRL         (1U << 26)
 /* Single Thread Indirect Branch Predictors */
@@ -781,8 +806,37 @@ typedef uint64_t FeatureWordArray[FEATURE_WORDS];
 /* Speculative Store Bypass Disable */
 #define CPUID_7_0_EDX_SPEC_CTRL_SSBD    (1U << 31)
 
+/* Restricted Transactional Memory Atomic Operations */
+#define CPUID_7_1_EAX_RAO_INT           (1U << 3)
 /* AVX512 BFloat16 Instruction */
 #define CPUID_7_1_EAX_AVX512_BF16       (1U << 5)
+/* Compare and Add if Condition is Met */
+#define CPUID_7_1_EAX_CMPCCXADD         (1U << 7)
+/* Advanced Matrix Extensions FP16 */
+#define CPUID_7_1_EAX_AMX_FP16          (1U << 21)
+/* Move with Restricted Speculation */
+#define CPUID_7_1_EAX_MOVRS             (1U << 31)
+
+/* Immediate-form RDMSR and WRMSRNS */
+#define CPUID_7_1_ECX_MSR_IMM           (1U << 5)
+
+/* Advanced Matrix Extensions COMPLEX */
+#define CPUID_7_1_EDX_AMX_COMPLEX        (1U << 8)
+/* User-mode MSR access (requires IA32_USER_MSR_CTL and its bitmap). */
+#define CPUID_7_1_EDX_USER_MSR          (1U << 15)
+/* Advanced Performance Extensions */
+#define CPUID_7_1_EDX_APX_F              (1U << 21)
+#define CPUID_29_0_EBX_NCI_NDD_NF        (1U << 0)
+
+/* CPUID[0x1e,1].EAX AMX feature aliases and extensions. */
+#define CPUID_1E_1_EAX_AMX_INT8_ALIAS    (1U << 0)
+#define CPUID_1E_1_EAX_AMX_BF16_ALIAS    (1U << 1)
+#define CPUID_1E_1_EAX_AMX_COMPLEX_ALIAS (1U << 2)
+#define CPUID_1E_1_EAX_AMX_FP16_ALIAS    (1U << 3)
+#define CPUID_1E_1_EAX_AMX_FP8           (1U << 4)
+/* Bit 6 is reserved. */
+#define CPUID_1E_1_EAX_AMX_AVX512        (1U << 7)
+#define CPUID_1E_1_EAX_AMX_MOVRS         (1U << 8)
 
 /* CLZERO instruction */
 #define CPUID_8000_0008_EBX_CLZERO      (1U << 0)
@@ -1000,6 +1054,7 @@ typedef uint64_t FeatureWordArray[FEATURE_WORDS];
 #define EXCP10_COPR	16
 #define EXCP11_ALGN	17
 #define EXCP12_MCHK	18
+#define EXCP13_XM	19
 
 #define EXCP_VMEXIT     0x100 /* only for system emulation */
 #define EXCP_SYSCALL    0x101 /* only for user emulation */
@@ -1209,6 +1264,664 @@ typedef struct {
 
 #define NB_OPMASK_REGS 8
 
+/* Internal descriptor shared by AMX memory translators and helpers. */
+#define AMX_MEM_TILE_MASK 0x7
+#define AMX_MEM_STORE (1U << 3)
+#define AMX_MEM_ADDR32 (1U << 4)
+#define AMX_MEM_ADD_SEG (1U << 5)
+#define AMX_MEM_SEG_SHIFT 6
+#define AMX_MEM_SEG_MASK 0x7
+#define AMX_MEM_SS (1U << 9)
+
+/* Internal descriptor shared by AMX compute translators and helpers. */
+#define AMX_COMPUTE_DST_SHIFT 0
+#define AMX_COMPUTE_SRC1_SHIFT 3
+#define AMX_COMPUTE_SRC2_SHIFT 6
+#define AMX_COMPUTE_OP_SHIFT 9
+#define AMX_COMPUTE_TILE_MASK 0x7
+#define AMX_COMPUTE_OP_MASK 0xf
+
+typedef enum AMXComputeOp {
+    AMX_COMPUTE_TDPBSSD,
+    AMX_COMPUTE_TDPBSUD,
+    AMX_COMPUTE_TDPBUSD,
+    AMX_COMPUTE_TDPBUUD,
+    AMX_COMPUTE_TDPBF16PS,
+    AMX_COMPUTE_TDPFP16PS,
+    AMX_COMPUTE_TCMMIMFP16PS,
+    AMX_COMPUTE_TCMMRLFP16PS,
+    AMX_COMPUTE_TDPBF8PS,
+    AMX_COMPUTE_TDPBHF8PS,
+    AMX_COMPUTE_TDPHBF8PS,
+    AMX_COMPUTE_TDPHF8PS,
+    AMX_COMPUTE_COUNT,
+} AMXComputeOp;
+
+/* Internal descriptor shared by AMX-AVX512 tile-row translators/helpers. */
+#define AMX_ROW_DST_SHIFT 0
+#define AMX_ROW_DST_MASK 0x1f
+#define AMX_ROW_SRC_SHIFT 5
+#define AMX_ROW_SRC_MASK 0x7
+#define AMX_ROW_OP_SHIFT 8
+#define AMX_ROW_OP_MASK 0x7
+#define AMX_ROW_IMMEDIATE (1U << 11)
+#define AMX_ROW_SELECTOR_SHIFT 12
+#define AMX_ROW_SELECTOR_MASK 0xff
+
+typedef enum AMXTileRowOp {
+    AMX_ROW_MOVE,
+    AMX_ROW_D2PS,
+    AMX_ROW_PS2BF16H,
+    AMX_ROW_PS2BF16L,
+    AMX_ROW_PS2PHH,
+    AMX_ROW_PS2PHL,
+    AMX_ROW_OP_COUNT,
+} AMXTileRowOp;
+
+/* Internal descriptor shared by the EVEX VMOVDQU translator and helpers. */
+#define EVEX_VMOV_REG_SHIFT 0
+#define EVEX_VMOV_REG_MASK  0x1f
+#define EVEX_VMOV_SRC_SHIFT 5
+#define EVEX_VMOV_ELEM_SHIFT 10
+#define EVEX_VMOV_VL_SHIFT 12
+#define EVEX_VMOV_MASK_SHIFT 14
+#define EVEX_VMOV_ZERO (1U << 17)
+#define EVEX_VMOV_ALIGNED (1U << 18)
+
+/* Internal descriptor for register-only EVEX packed integer arithmetic. */
+#define EVEX_PINT_DST_SHIFT 0
+#define EVEX_PINT_REG_MASK  0x1f
+#define EVEX_PINT_SRC1_SHIFT 5
+#define EVEX_PINT_SRC2_SHIFT 10
+#define EVEX_PINT_ELEM_SHIFT 15
+#define EVEX_PINT_VL_SHIFT 17
+#define EVEX_PINT_MASK_SHIFT 19
+#define EVEX_PINT_ZERO (1U << 22)
+#define EVEX_PINT_OP_SHIFT 23
+#define EVEX_PINT_OP_MASK 0x3f
+
+typedef enum EVEXPackedIntOp {
+    EVEX_PINT_ADD,
+    EVEX_PINT_SUB,
+    EVEX_PINT_SAT_ADD_SIGNED,
+    EVEX_PINT_SAT_ADD_UNSIGNED,
+    EVEX_PINT_SAT_SUB_SIGNED,
+    EVEX_PINT_SAT_SUB_UNSIGNED,
+    EVEX_PINT_AVG_UNSIGNED,
+    EVEX_PINT_AND,
+    EVEX_PINT_AND_NOT,
+    EVEX_PINT_OR,
+    EVEX_PINT_XOR,
+    EVEX_PINT_MIN_SIGNED,
+    EVEX_PINT_MIN_UNSIGNED,
+    EVEX_PINT_MAX_SIGNED,
+    EVEX_PINT_MAX_UNSIGNED,
+    EVEX_PINT_ABS,
+    EVEX_PINT_LZCNT,
+    EVEX_PINT_POPCNT,
+    EVEX_PINT_MUL_LOW,
+    EVEX_PINT_MUL_HIGH_SIGNED,
+    EVEX_PINT_MUL_HIGH_UNSIGNED,
+    EVEX_PINT_MUL_HRSW,
+    EVEX_PINT_MUL_DQ_SIGNED,
+    EVEX_PINT_MUL_DQ_UNSIGNED,
+    EVEX_PINT_DOT_BYTE,
+    EVEX_PINT_DOT_BYTE_SATURATE,
+    EVEX_PINT_DOT_WORD,
+    EVEX_PINT_DOT_WORD_SATURATE,
+    EVEX_PINT_MADD52_LOW,
+    EVEX_PINT_MADD52_HIGH,
+    EVEX_PINT_PERMUTE,
+    EVEX_PINT_PERMUTE_IN_LANE,
+    EVEX_PINT_PERMUTE_TWO_INDEX,
+    EVEX_PINT_PERMUTE_TWO_TABLE,
+    EVEX_PINT_MULTISHIFT,
+    EVEX_PINT_BLEND,
+    EVEX_PINT_CONFLICT,
+    EVEX_PINT_BROADCAST,
+    EVEX_PINT_OP_COUNT,
+} EVEXPackedIntOp;
+
+/* Internal descriptor for register-only EVEX packed shifts and rotates. */
+#define EVEX_SHIFT_DST_SHIFT 0
+#define EVEX_SHIFT_REG_MASK 0x1f
+#define EVEX_SHIFT_SRC1_SHIFT 5
+#define EVEX_SHIFT_SRC2_SHIFT 10
+#define EVEX_SHIFT_ELEM_SHIFT 15
+#define EVEX_SHIFT_VL_SHIFT 17
+#define EVEX_SHIFT_MASK_SHIFT 19
+#define EVEX_SHIFT_ZERO (1U << 22)
+#define EVEX_SHIFT_OP_SHIFT 23
+#define EVEX_SHIFT_OP_MASK 0xf
+#define EVEX_SHIFT_VARIABLE (1U << 27)
+
+typedef enum EVEXPackedShiftOp {
+    EVEX_SHIFT_LEFT,
+    EVEX_SHIFT_RIGHT_LOGICAL,
+    EVEX_SHIFT_RIGHT_ARITHMETIC,
+    EVEX_ROTATE_LEFT,
+    EVEX_ROTATE_RIGHT,
+    EVEX_DOUBLE_SHIFT_LEFT,
+    EVEX_DOUBLE_SHIFT_RIGHT,
+    EVEX_SHIFT_BYTES_LEFT,
+    EVEX_SHIFT_BYTES_RIGHT,
+    EVEX_SHIFT_ALIGN_ELEMENTS,
+    EVEX_SHIFT_OP_COUNT,
+} EVEXPackedShiftOp;
+
+/* Internal descriptor for register-only EVEX VPSHUFBITQMB. */
+#define EVEX_BITSHUF_DST_SHIFT 0
+#define EVEX_BITSHUF_SRC1_SHIFT 3
+#define EVEX_BITSHUF_REG_MASK 0x1f
+#define EVEX_BITSHUF_SRC2_SHIFT 8
+#define EVEX_BITSHUF_VL_SHIFT 13
+#define EVEX_BITSHUF_MASK_SHIFT 15
+
+/* Internal descriptor for register-only EVEX VPTESTM/VPTESTNM. */
+#define EVEX_MTEST_DST_SHIFT 0
+#define EVEX_MTEST_SRC1_SHIFT 3
+#define EVEX_MTEST_REG_MASK 0x1f
+#define EVEX_MTEST_SRC2_SHIFT 8
+#define EVEX_MTEST_ELEM_SHIFT 13
+#define EVEX_MTEST_VL_SHIFT 15
+#define EVEX_MTEST_MASK_SHIFT 17
+#define EVEX_MTEST_NEGATED (1U << 20)
+
+/* Internal descriptor for register-only EVEX VPTERNLOGD/VPTERNLOGQ. */
+#define EVEX_TLOG_DST_SHIFT 0
+#define EVEX_TLOG_REG_MASK 0x1f
+#define EVEX_TLOG_SRC1_SHIFT 5
+#define EVEX_TLOG_SRC2_SHIFT 10
+#define EVEX_TLOG_ELEM_SHIFT 15
+#define EVEX_TLOG_VL_SHIFT 17
+#define EVEX_TLOG_MASK_SHIFT 19
+#define EVEX_TLOG_ZERO (1U << 22)
+
+/* Internal descriptor for register-only EVEX VPSHUFD/VPSHUFHW/VPSHUFLW. */
+#define EVEX_SHUF_DST_SHIFT 0
+#define EVEX_SHUF_REG_MASK 0x1f
+#define EVEX_SHUF_SRC_SHIFT 5
+#define EVEX_SHUF_VL_SHIFT 10
+#define EVEX_SHUF_MASK_SHIFT 12
+#define EVEX_SHUF_ZERO (1U << 15)
+#define EVEX_SHUF_HIGH_WORDS (1U << 16)
+#define EVEX_SHUF_DWORDS (1U << 17)
+
+/* Internal descriptor for 128-bit-lane EVEX integer operations. */
+#define EVEX_LANE_DST_SHIFT 0
+#define EVEX_LANE_REG_MASK 0x1f
+#define EVEX_LANE_SRC1_SHIFT 5
+#define EVEX_LANE_SRC2_SHIFT 10
+#define EVEX_LANE_VL_SHIFT 15
+#define EVEX_LANE_MASK_SHIFT 17
+#define EVEX_LANE_ZERO (1U << 20)
+#define EVEX_LANE_OP_SHIFT 21
+#define EVEX_LANE_OP_MASK 0x1f
+
+typedef enum EVEXLaneIntOp {
+    EVEX_LANE_PACKSSWB,
+    EVEX_LANE_PACKSSDW,
+    EVEX_LANE_PACKUSWB,
+    EVEX_LANE_PACKUSDW,
+    EVEX_LANE_UNPACK_LOW_B,
+    EVEX_LANE_UNPACK_LOW_W,
+    EVEX_LANE_UNPACK_LOW_D,
+    EVEX_LANE_UNPACK_LOW_Q,
+    EVEX_LANE_UNPACK_HIGH_B,
+    EVEX_LANE_UNPACK_HIGH_W,
+    EVEX_LANE_UNPACK_HIGH_D,
+    EVEX_LANE_UNPACK_HIGH_Q,
+    EVEX_LANE_SHUFFLE_BYTES,
+    EVEX_LANE_ALIGN_RIGHT,
+    EVEX_LANE_MADDUBSW,
+    EVEX_LANE_MADDWD,
+    EVEX_LANE_SADBW,
+    EVEX_LANE_SHUFFLE_PS,
+    EVEX_LANE_SHUFFLE_PD,
+    EVEX_LANE_SHUFFLE_128_D,
+    EVEX_LANE_SHUFFLE_128_Q,
+    EVEX_LANE_INSERT_128_D,
+    EVEX_LANE_INSERT_128_Q,
+    EVEX_LANE_INSERT_256_D,
+    EVEX_LANE_INSERT_256_Q,
+    EVEX_LANE_EXTRACT_128_D,
+    EVEX_LANE_EXTRACT_128_Q,
+    EVEX_LANE_EXTRACT_256_D,
+    EVEX_LANE_EXTRACT_256_Q,
+    EVEX_LANE_DUP_LOW_D,
+    EVEX_LANE_DUP_HIGH_D,
+    EVEX_LANE_DUP_LOW_Q,
+    EVEX_LANE_OP_COUNT,
+} EVEXLaneIntOp;
+
+/* Internal descriptor for 128-bit scalar lane extraction/insertion. */
+#define EVEX_SCALAR_LANE_DST_SHIFT 0
+#define EVEX_SCALAR_LANE_REG_MASK 0x1f
+#define EVEX_SCALAR_LANE_SRC_SHIFT 5
+#define EVEX_SCALAR_LANE_ELEM_SHIFT 10
+#define EVEX_SCALAR_LANE_INDEX_SHIFT 12
+#define EVEX_SCALAR_LANE_INDEX_MASK 0xf
+#define EVEX_SCALAR_LANE_ZERO_MASK_SHIFT 16
+#define EVEX_SCALAR_LANE_ZERO_MASK 0xf
+
+/* Internal descriptor for masked EVEX VMOVSS/VMOVSD. */
+#define EVEX_SCALAR_MOVE_DST_SHIFT 0
+#define EVEX_SCALAR_MOVE_REG_MASK 0x1f
+#define EVEX_SCALAR_MOVE_SRC1_SHIFT 5
+#define EVEX_SCALAR_MOVE_SRC2_SHIFT 10
+#define EVEX_SCALAR_MOVE_MASK_SHIFT 15
+#define EVEX_SCALAR_MOVE_ZERO (1U << 18)
+#define EVEX_SCALAR_MOVE_QWORD (1U << 19)
+
+/* Internal descriptor for EVEX scalar and tuple broadcasts. */
+#define EVEX_BCAST_DST_SHIFT 0
+#define EVEX_BCAST_REG_MASK 0x1f
+#define EVEX_BCAST_SRC_SHIFT 5
+#define EVEX_BCAST_VL_SHIFT 10
+#define EVEX_BCAST_MASK_SHIFT 12
+#define EVEX_BCAST_ZERO (1U << 15)
+#define EVEX_BCAST_ELEM_SHIFT 16
+#define EVEX_BCAST_TUPLE_SHIFT 18
+#define EVEX_BCAST_TUPLE_MASK 0x7
+
+typedef enum EVEXCryptoOp {
+    EVEX_CRYPTO_AES_DEC,
+    EVEX_CRYPTO_AES_DEC_LAST,
+    EVEX_CRYPTO_AES_ENC,
+    EVEX_CRYPTO_AES_ENC_LAST,
+    EVEX_CRYPTO_GF_MUL,
+    EVEX_CRYPTO_GF_AFFINE,
+    EVEX_CRYPTO_GF_AFFINE_INV,
+    EVEX_CRYPTO_PCLMUL,
+} EVEXCryptoOp;
+
+/* Internal descriptor for EVEX VAES, GFNI, and VPCLMULQDQ. */
+#define EVEX_CRYPTO_DST_SHIFT 0
+#define EVEX_CRYPTO_REG_MASK 0x1f
+#define EVEX_CRYPTO_SRC1_SHIFT 5
+#define EVEX_CRYPTO_SRC2_SHIFT 10
+#define EVEX_CRYPTO_VL_SHIFT 15
+#define EVEX_CRYPTO_MASK_SHIFT 17
+#define EVEX_CRYPTO_ZERO (1U << 20)
+#define EVEX_CRYPTO_BROADCAST (1U << 21)
+#define EVEX_CRYPTO_OP_SHIFT 22
+#define EVEX_CRYPTO_OP_MASK 0x7
+
+/* Internal descriptor for EVEX vector/mask-register conversions. */
+#define EVEX_MCONV_DST_SHIFT 0
+#define EVEX_MCONV_REG_MASK 0x1f
+#define EVEX_MCONV_SRC_SHIFT 5
+#define EVEX_MCONV_ELEM_SHIFT 10
+#define EVEX_MCONV_VL_SHIFT 12
+#define EVEX_MCONV_OP_SHIFT 14
+#define EVEX_MCONV_OP_MASK 0x3
+
+typedef enum EVEXMaskConvertOp {
+    EVEX_MCONV_MASK_TO_VECTOR,
+    EVEX_MCONV_VECTOR_TO_MASK,
+    EVEX_MCONV_BROADCAST_MASK,
+    EVEX_MCONV_OP_COUNT,
+} EVEXMaskConvertOp;
+
+/* Internal descriptor for register-only EVEX widening integer moves. */
+#define EVEX_WIDEN_DST_SHIFT 0
+#define EVEX_WIDEN_REG_MASK 0x1f
+#define EVEX_WIDEN_SRC_SHIFT 5
+#define EVEX_WIDEN_INPUT_SHIFT 10
+#define EVEX_WIDEN_OUTPUT_SHIFT 12
+#define EVEX_WIDEN_VL_SHIFT 14
+#define EVEX_WIDEN_MASK_SHIFT 16
+#define EVEX_WIDEN_ZERO (1U << 19)
+#define EVEX_WIDEN_SIGNED (1U << 20)
+
+/* Internal descriptor for register-only EVEX narrowing integer moves. */
+#define EVEX_NARROW_DST_SHIFT 0
+#define EVEX_NARROW_REG_MASK 0x1f
+#define EVEX_NARROW_SRC_SHIFT 5
+#define EVEX_NARROW_INPUT_SHIFT 10
+#define EVEX_NARROW_OUTPUT_SHIFT 12
+#define EVEX_NARROW_VL_SHIFT 14
+#define EVEX_NARROW_MASK_SHIFT 16
+#define EVEX_NARROW_ZERO (1U << 19)
+#define EVEX_NARROW_MODE_SHIFT 20
+#define EVEX_NARROW_MODE_MASK 0x3
+
+typedef enum EVEXNarrowMode {
+    EVEX_NARROW_TRUNCATE,
+    EVEX_NARROW_SATURATE_SIGNED,
+    EVEX_NARROW_SATURATE_UNSIGNED,
+    EVEX_NARROW_MODE_COUNT,
+} EVEXNarrowMode;
+
+/* Internal descriptor for register-only EVEX packed integer comparisons. */
+#define EVEX_PCMP_DST_SHIFT 0
+#define EVEX_PCMP_SRC1_SHIFT 3
+#define EVEX_PCMP_REG_MASK 0x1f
+#define EVEX_PCMP_SRC2_SHIFT 8
+#define EVEX_PCMP_ELEM_SHIFT 13
+#define EVEX_PCMP_VL_SHIFT 15
+#define EVEX_PCMP_MASK_SHIFT 17
+#define EVEX_PCMP_PRED_SHIFT 20
+#define EVEX_PCMP_UNSIGNED (1U << 23)
+
+/* Internal descriptor for EVEX compress/expand operations. */
+#define EVEX_CE_DST_SHIFT 0
+#define EVEX_CE_REG_MASK 0x1f
+#define EVEX_CE_SRC_SHIFT 5
+#define EVEX_CE_ELEM_SHIFT 10
+#define EVEX_CE_VL_SHIFT 12
+#define EVEX_CE_MASK_SHIFT 14
+#define EVEX_CE_ZERO (1U << 17)
+#define EVEX_CE_EXPAND (1U << 18)
+#define EVEX_CE_STACK (1U << 19)
+
+/* Internal descriptor for EVEX 14-bit approximations. */
+#define EVEX_APPROX14_DST_SHIFT 0
+#define EVEX_APPROX14_REG_MASK 0x1f
+#define EVEX_APPROX14_SRC1_SHIFT 5
+#define EVEX_APPROX14_SRC2_SHIFT 10
+#define EVEX_APPROX14_VL_SHIFT 15
+#define EVEX_APPROX14_MASK_SHIFT 17
+#define EVEX_APPROX14_DOUBLE (1U << 20)
+#define EVEX_APPROX14_RSQRT (1U << 21)
+#define EVEX_APPROX14_SCALAR (1U << 22)
+#define EVEX_APPROX14_ZERO (1U << 23)
+#define EVEX_APPROX14_BROADCAST (1U << 24)
+
+/* Internal descriptor for EVEX single/double floating-point arithmetic. */
+#define EVEX_FP_ARITH_DST_SHIFT 0
+#define EVEX_FP_ARITH_REG_MASK 0x1f
+#define EVEX_FP_ARITH_SRC1_SHIFT 5
+#define EVEX_FP_ARITH_SRC2_SHIFT 10
+#define EVEX_FP_ARITH_VL_SHIFT 15
+#define EVEX_FP_ARITH_MASK_SHIFT 17
+#define EVEX_FP_ARITH_OP_SHIFT 20
+#define EVEX_FP_ARITH_OP_MASK 0x7
+#define EVEX_FP_ARITH_DOUBLE (1U << 23)
+#define EVEX_FP_ARITH_SCALAR (1U << 24)
+#define EVEX_FP_ARITH_ZERO (1U << 25)
+#define EVEX_FP_ARITH_SAE (1U << 26)
+#define EVEX_FP_ARITH_RC_SHIFT 27
+#define EVEX_FP_ARITH_RC_MASK 0x3
+#define EVEX_FP_ARITH_BROADCAST (1U << 29)
+
+typedef enum EVEXFPArithOp {
+    EVEX_FP_ARITH_ADD,
+    EVEX_FP_ARITH_SUB,
+    EVEX_FP_ARITH_MUL,
+    EVEX_FP_ARITH_DIV,
+    EVEX_FP_ARITH_MIN,
+    EVEX_FP_ARITH_MAX,
+    EVEX_FP_ARITH_SQRT,
+    EVEX_FP_ARITH_OP_COUNT,
+} EVEXFPArithOp;
+
+/* Internal descriptor for EVEX FMA3 operations. */
+#define EVEX_FMA_DST_SHIFT 0
+#define EVEX_FMA_REG_MASK 0x1f
+#define EVEX_FMA_SRC1_SHIFT 5
+#define EVEX_FMA_SRC2_SHIFT 10
+#define EVEX_FMA_VL_SHIFT 15
+#define EVEX_FMA_MASK_SHIFT 17
+#define EVEX_FMA_PERM_SHIFT 20
+#define EVEX_FMA_VARIANT_SHIFT 22
+#define EVEX_FMA_VARIANT_MASK 0x7
+#define EVEX_FMA_DOUBLE (1U << 25)
+#define EVEX_FMA_SCALAR (1U << 26)
+#define EVEX_FMA_ZERO (1U << 27)
+#define EVEX_FMA_SAE (1U << 28)
+#define EVEX_FMA_RC_SHIFT 29
+#define EVEX_FMA_RC_MASK 0x3
+#define EVEX_FMA_BROADCAST (1U << 31)
+
+/* Internal descriptor for the Knights Mill four-register source groups. */
+#define EVEX_FOUR_DST_SHIFT 0
+#define EVEX_FOUR_REG_MASK 0x1f
+#define EVEX_FOUR_SRC_SHIFT 5
+#define EVEX_FOUR_MASK_SHIFT 10
+#define EVEX_FOUR_ZERO (1U << 13)
+#define EVEX_FOUR_SCALAR (1U << 14)
+#define EVEX_FOUR_NEGATIVE (1U << 15)
+#define EVEX_FOUR_SATURATING (1U << 16)
+
+/* Internal descriptor for VFPCLASS mask results. */
+#define EVEX_FPCLASS_DST_SHIFT 0
+#define EVEX_FPCLASS_SRC_SHIFT 3
+#define EVEX_FPCLASS_REG_MASK 0x1f
+#define EVEX_FPCLASS_VL_SHIFT 8
+#define EVEX_FPCLASS_MASK_SHIFT 10
+#define EVEX_FPCLASS_DOUBLE (1U << 13)
+#define EVEX_FPCLASS_SCALAR (1U << 14)
+#define EVEX_FPCLASS_BROADCAST (1U << 15)
+
+/* Internal descriptor for EVEX scalar COMI/UCOMI. */
+#define EVEX_COMI_LEFT_SHIFT 0
+#define EVEX_COMI_RIGHT_SHIFT 5
+#define EVEX_COMI_REG_MASK 0x1f
+#define EVEX_COMI_DOUBLE (1U << 10)
+#define EVEX_COMI_QUIET (1U << 11)
+#define EVEX_COMI_SAE (1U << 12)
+
+/* Internal descriptor for EVEX floating-point comparisons. */
+#define EVEX_FCMP_DST_SHIFT 0
+#define EVEX_FCMP_SRC1_SHIFT 3
+#define EVEX_FCMP_SRC2_SHIFT 8
+#define EVEX_FCMP_REG_MASK 0x1f
+#define EVEX_FCMP_VL_SHIFT 13
+#define EVEX_FCMP_MASK_SHIFT 15
+#define EVEX_FCMP_DOUBLE (1U << 18)
+#define EVEX_FCMP_SCALAR (1U << 19)
+#define EVEX_FCMP_SAE (1U << 20)
+#define EVEX_FCMP_BROADCAST (1U << 21)
+#define EVEX_FCMP_STACK (1U << 22)
+
+/* Internal descriptor for register-destination EVEX vector conversions. */
+#define EVEX_CVT_DST_SHIFT 0
+#define EVEX_CVT_REG_MASK 0x1f
+#define EVEX_CVT_SRC_SHIFT 5
+#define EVEX_CVT_VL_SHIFT 10
+#define EVEX_CVT_MASK_SHIFT 12
+#define EVEX_CVT_SRC_TYPE_SHIFT 15
+#define EVEX_CVT_DST_TYPE_SHIFT 18
+#define EVEX_CVT_TYPE_MASK 0x7
+#define EVEX_CVT_ZERO (1U << 21)
+#define EVEX_CVT_TRUNCATE (1U << 22)
+#define EVEX_CVT_SAE (1U << 23)
+#define EVEX_CVT_RC_SHIFT 24
+#define EVEX_CVT_RC_MASK 0x3
+#define EVEX_CVT_BROADCAST (1U << 26)
+#define EVEX_CVT_EMBEDDED_RC (1U << 27)
+
+typedef enum EVEXConvertType {
+    EVEX_CVT_I32,
+    EVEX_CVT_U32,
+    EVEX_CVT_I64,
+    EVEX_CVT_U64,
+    EVEX_CVT_F16,
+    EVEX_CVT_F32,
+    EVEX_CVT_F64,
+    EVEX_CVT_TYPE_COUNT,
+} EVEXConvertType;
+
+/* Internal descriptor for EVEX scalar conversions. */
+#define EVEX_SCVT_DST_SHIFT 0
+#define EVEX_SCVT_REG_MASK 0x1f
+#define EVEX_SCVT_SRC1_SHIFT 5
+#define EVEX_SCVT_SRC2_SHIFT 10
+#define EVEX_SCVT_MASK_SHIFT 15
+#define EVEX_SCVT_SRC_TYPE_SHIFT 18
+#define EVEX_SCVT_DST_TYPE_SHIFT 21
+#define EVEX_SCVT_TYPE_MASK 0x7
+#define EVEX_SCVT_ZERO (1U << 24)
+#define EVEX_SCVT_TRUNCATE (1U << 25)
+#define EVEX_SCVT_SAE (1U << 26)
+#define EVEX_SCVT_EMBEDDED_RC (1U << 27)
+#define EVEX_SCVT_RC_SHIFT 28
+#define EVEX_SCVT_RC_MASK 0x3
+#define EVEX_SCVT_GPR_SOURCE (1U << 30)
+#define EVEX_SCVT_GPR_DESTINATION (1U << 31)
+
+/* Internal descriptor for EVEX VRANGE operations. */
+#define EVEX_RANGE_DST_SHIFT 0
+#define EVEX_RANGE_REG_MASK 0x1f
+#define EVEX_RANGE_SRC1_SHIFT 5
+#define EVEX_RANGE_SRC2_SHIFT 10
+#define EVEX_RANGE_VL_SHIFT 15
+#define EVEX_RANGE_MASK_SHIFT 17
+#define EVEX_RANGE_IMM_SHIFT 20
+#define EVEX_RANGE_DOUBLE (1U << 24)
+#define EVEX_RANGE_SCALAR (1U << 25)
+#define EVEX_RANGE_ZERO (1U << 26)
+#define EVEX_RANGE_SAE (1U << 27)
+#define EVEX_RANGE_BROADCAST (1U << 28)
+
+/* Internal descriptor for EVEX VFIXUPIMM/VREDUCE/VRNDSCALE operations. */
+#define EVEX_FP_TRANSFORM_DST_SHIFT 0
+#define EVEX_FP_TRANSFORM_REG_MASK 0x1f
+#define EVEX_FP_TRANSFORM_SRC1_SHIFT 5
+#define EVEX_FP_TRANSFORM_SRC2_SHIFT 10
+#define EVEX_FP_TRANSFORM_VL_SHIFT 15
+#define EVEX_FP_TRANSFORM_MASK_SHIFT 17
+#define EVEX_FP_TRANSFORM_KIND_SHIFT 20
+#define EVEX_FP_TRANSFORM_KIND_MASK 0x3
+#define EVEX_FP_TRANSFORM_DOUBLE (1U << 22)
+#define EVEX_FP_TRANSFORM_SCALAR (1U << 23)
+#define EVEX_FP_TRANSFORM_ZERO (1U << 24)
+#define EVEX_FP_TRANSFORM_SAE (1U << 25)
+#define EVEX_FP_TRANSFORM_BROADCAST (1U << 26)
+
+typedef enum EVEXFPTransformKind {
+    EVEX_FP_TRANSFORM_FIXUP,
+    EVEX_FP_TRANSFORM_REDUCE,
+    EVEX_FP_TRANSFORM_ROUNDSCALE,
+} EVEXFPTransformKind;
+
+/* Internal descriptor for EVEX VGETEXP/VGETMANT operations. */
+#define EVEX_GET_FP_DST_SHIFT 0
+#define EVEX_GET_FP_REG_MASK 0x1f
+#define EVEX_GET_FP_SRC1_SHIFT 5
+#define EVEX_GET_FP_SRC2_SHIFT 10
+#define EVEX_GET_FP_VL_SHIFT 15
+#define EVEX_GET_FP_MASK_SHIFT 17
+#define EVEX_GET_FP_IMM_SHIFT 20
+#define EVEX_GET_FP_DOUBLE (1U << 24)
+#define EVEX_GET_FP_SCALAR (1U << 25)
+#define EVEX_GET_FP_ZERO (1U << 26)
+#define EVEX_GET_FP_SAE (1U << 27)
+#define EVEX_GET_FP_BROADCAST (1U << 28)
+#define EVEX_GET_FP_MANTISSA (1U << 29)
+
+/* Internal descriptor for EVEX VSCALEF operations. */
+#define EVEX_SCALEF_DST_SHIFT 0
+#define EVEX_SCALEF_REG_MASK 0x1f
+#define EVEX_SCALEF_SRC1_SHIFT 5
+#define EVEX_SCALEF_SRC2_SHIFT 10
+#define EVEX_SCALEF_VL_SHIFT 15
+#define EVEX_SCALEF_MASK_SHIFT 17
+#define EVEX_SCALEF_DOUBLE (1U << 20)
+#define EVEX_SCALEF_SCALAR (1U << 21)
+#define EVEX_SCALEF_ZERO (1U << 22)
+#define EVEX_SCALEF_SAE (1U << 23)
+#define EVEX_SCALEF_BROADCAST (1U << 24)
+#define EVEX_SCALEF_RC_SHIFT 25
+#define EVEX_SCALEF_RC_MASK 0x3
+
+/* Internal descriptor for EVEX 28-bit approximations and VEXP2.  Packed
+ * forms are always 512 bits; scalar forms are LLIG. */
+#define EVEX_APPROX28_DST_SHIFT 0
+#define EVEX_APPROX28_REG_MASK 0x1f
+#define EVEX_APPROX28_SRC1_SHIFT 5
+#define EVEX_APPROX28_SRC2_SHIFT 10
+#define EVEX_APPROX28_MASK_SHIFT 15
+#define EVEX_APPROX28_DOUBLE (1U << 18)
+#define EVEX_APPROX28_RSQRT (1U << 19)
+#define EVEX_APPROX28_EXP2 (1U << 20)
+#define EVEX_APPROX28_SCALAR (1U << 21)
+#define EVEX_APPROX28_ZERO (1U << 22)
+#define EVEX_APPROX28_SAE (1U << 23)
+#define EVEX_APPROX28_BROADCAST (1U << 24)
+
+/* Internal descriptor for register-only promoted APX scalar operations. */
+#define APX_SCALAR_DST_SHIFT 0
+#define APX_SCALAR_REG_MASK 0x1f
+#define APX_SCALAR_SRC1_SHIFT 5
+#define APX_SCALAR_SRC2_SHIFT 10
+#define APX_SCALAR_WIDTH_SHIFT 15
+#define APX_SCALAR_OP_SHIFT 17
+#define APX_SCALAR_OP_MASK 0x3f
+#define APX_SCALAR_NO_FLAGS (1U << 23)
+#define APX_SCALAR_COUNT_CL (1U << 24)
+
+typedef enum APXScalarOp {
+    APX_SCALAR_INC,
+    APX_SCALAR_DEC,
+    APX_SCALAR_NOT,
+    APX_SCALAR_NEG,
+    APX_SCALAR_ROL,
+    APX_SCALAR_ROR,
+    APX_SCALAR_RCL,
+    APX_SCALAR_RCR,
+    APX_SCALAR_SHL,
+    APX_SCALAR_SHR,
+    APX_SCALAR_SAR,
+    APX_SCALAR_SHLD,
+    APX_SCALAR_SHRD,
+    APX_SCALAR_IMUL,
+    APX_SCALAR_ADCX,
+    APX_SCALAR_ADOX,
+    APX_SCALAR_ANDN,
+    APX_SCALAR_BEXTR,
+    APX_SCALAR_BLSR,
+    APX_SCALAR_BLSMSK,
+    APX_SCALAR_BLSI,
+    APX_SCALAR_BZHI,
+    APX_SCALAR_PDEP,
+    APX_SCALAR_PEXT,
+    APX_SCALAR_SARX,
+    APX_SCALAR_SHLX,
+    APX_SCALAR_SHRX,
+    APX_SCALAR_RORX,
+    APX_SCALAR_LZCNT,
+    APX_SCALAR_TZCNT,
+    APX_SCALAR_POPCNT,
+    APX_SCALAR_MULX,
+    APX_SCALAR_OP_COUNT,
+} APXScalarOp;
+
+/* Internal descriptor for APX PUSH2/POP2 helpers. */
+#define APX_PAIR_V_SHIFT 0
+#define APX_PAIR_REG_MASK 0x1f
+#define APX_PAIR_B_SHIFT 5
+#define APX_PAIR_PUSH (1U << 10)
+
+/* Internal descriptor for single-register REX2 PUSH/POP stack checks. */
+#define APX_PUSH_POP_PUSH (1U << 0)
+#define APX_PUSH_POP_16 (1U << 1)
+
+/* Internal descriptor for APX memory-address exception classification. */
+#define APX_MEMORY_SS (1U << 0)
+#define APX_MEMORY_TUPLE (1U << 1)
+#define APX_MEMORY_ACCESS_BYTES_MASK 0xffU
+#define APX_MEMORY_MODULO_ELEMENTS_SHIFT 8
+
+/* Internal descriptor for ENQCMD/ENQCMDS. */
+#define APX_ENQUEUE_SOURCE_SS (1U << 0)
+#define APX_ENQUEUE_SUPERVISOR (1U << 1)
+
+/* Internal descriptor for APX MOVDIR64B. */
+#define APX_MOVDIR64B_DST_SHIFT 0
+#define APX_MOVDIR64B_REG_MASK 0x1f
+#define APX_MOVDIR64B_ADDRESS32 (1U << 5)
+
+/* Internal descriptor for APX CMPccXADD. */
+#define APX_CMPCC_CONDITION_SHIFT 0
+#define APX_CMPCC_CONDITION_MASK 0xf
+#define APX_CMPCC_COMPARE_SHIFT 4
+#define APX_CMPCC_ADD_SHIFT 9
+#define APX_CMPCC_REG_MASK 0x1f
+#define APX_CMPCC_64 (1U << 14)
+#define APX_CMPCC_PARALLEL (1U << 15)
+
 /* CPU can't have 0xFFFFFFFF APIC ID, use that value to distinguish
  * that APIC ID hasn't been set yet
  */
@@ -1254,6 +1967,11 @@ typedef union XSaveBNDCSR {
     uint8_t data[64];
 } XSaveBNDCSR;
 
+/* Ext. save area 19: APX EGPR state.  It reuses the retired MPX area. */
+typedef struct XSaveAPX {
+    uint64_t egprs[16];
+} XSaveAPX;
+
 /* Ext. save area 5: Opmask */
 typedef struct XSaveOpmask {
     uint64_t opmask_regs[NB_OPMASK_REGS];
@@ -1275,6 +1993,16 @@ typedef struct XSavePKRU {
     uint32_t padding;
 } XSavePKRU;
 
+/* Ext. save area 17: AMX tile configuration state */
+typedef struct XSaveXTILECFG {
+    uint8_t xtilecfg[64];
+} XSaveXTILECFG;
+
+/* Ext. save area 18: AMX tile data state */
+typedef struct XSaveXTILEDATA {
+    uint8_t xtiledata[8][1024];
+} XSaveXTILEDATA;
+
 typedef struct X86XSaveArea {
     X86LegacyXSaveArea legacy;
     X86XSaveHeader header;
@@ -1284,15 +2012,24 @@ typedef struct X86XSaveArea {
     /* AVX State: */
     XSaveAVX avx_state;
     uint8_t padding[960 - 576 - sizeof(XSaveAVX)];
-    /* MPX State: */
-    XSaveBNDREG bndreg_state;
-    XSaveBNDCSR bndcsr_state;
+    union {
+        struct {
+            /* MPX State: */
+            XSaveBNDREG bndreg_state;
+            XSaveBNDCSR bndcsr_state;
+        };
+        XSaveAPX apx_state;
+    };
     /* AVX-512 State: */
     XSaveOpmask opmask_state;
     XSaveZMM_Hi256 zmm_hi256_state;
     XSaveHi16_ZMM hi16_zmm_state;
     /* PKRU State: */
     XSavePKRU pkru_state;
+    uint8_t padding2[0x38];
+    /* AMX State: */
+    XSaveXTILECFG xtilecfg_state;
+    XSaveXTILEDATA xtiledata_state;
 } X86XSaveArea;
 
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, avx_state) != 0x240);
@@ -1301,6 +2038,8 @@ QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, bndreg_state) != 0x3c0);
 QEMU_BUILD_BUG_ON(sizeof(XSaveBNDREG) != 0x40);
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, bndcsr_state) != 0x400);
 QEMU_BUILD_BUG_ON(sizeof(XSaveBNDCSR) != 0x40);
+QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, apx_state) != 0x3c0);
+QEMU_BUILD_BUG_ON(sizeof(XSaveAPX) != 0x80);
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, opmask_state) != 0x440);
 QEMU_BUILD_BUG_ON(sizeof(XSaveOpmask) != 0x40);
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, zmm_hi256_state) != 0x480);
@@ -1309,6 +2048,11 @@ QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, hi16_zmm_state) != 0x680);
 QEMU_BUILD_BUG_ON(sizeof(XSaveHi16_ZMM) != 0x400);
 QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, pkru_state) != 0xA80);
 QEMU_BUILD_BUG_ON(sizeof(XSavePKRU) != 0x8);
+QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, xtilecfg_state) != 0xAC0);
+QEMU_BUILD_BUG_ON(sizeof(XSaveXTILECFG) != 0x40);
+QEMU_BUILD_BUG_ON(offsetof(X86XSaveArea, xtiledata_state) != 0xB00);
+QEMU_BUILD_BUG_ON(sizeof(XSaveXTILEDATA) != 0x2000);
+QEMU_BUILD_BUG_ON(sizeof(X86XSaveArea) != 0x2B00);
 
 typedef enum TPRAccess {
     TPR_ACCESS_READ,
@@ -1444,6 +2188,11 @@ typedef struct CPUX86State {
     YMMReg zmmh_regs[CPU_NB_REGS];          /* currently not in use */
     ZMMReg hi16_zmm_regs[CPU_NB_REGS];      /* currently not in use */
 
+    /* Intel AMX state uses the architectural XSAVE component layouts:
+     * one 64-byte TILECFG and eight independent 1024-byte tiles. */
+    uint8_t xtilecfg[64];
+    uint8_t xtiledata[8][1024];
+
     /* sysenter registers */
     uint32_t sysenter_cs;
     target_ulong sysenter_esp;
@@ -1469,6 +2218,7 @@ typedef struct CPUX86State {
     uint64_t mcg_status;
     uint64_t msr_ia32_misc_enable;
     uint64_t msr_ia32_feature_control;
+    uint32_t msr_ia32_pasid;
 
     uint64_t msr_fixed_ctr_ctrl;
     uint64_t msr_global_ctrl;
@@ -1522,6 +2272,12 @@ typedef struct CPUX86State {
     uint8_t v_tpr;
 
     uintptr_t retaddr;
+
+#ifdef TARGET_X86_64
+    /* APX R16-R31 are kept separate so the established R0-R15 offsets and
+     * CPU_NB_REGS-dependent TCG/vector state remain ABI-stable. */
+    uint64_t apx_regs[16];
+#endif
 
     /* Fields up to this point are cleared by a CPU reset */
     int end_reset_fields;

@@ -1,0 +1,64 @@
+/* Original decoding and exception-priority fixtures, 2026-10-04.
+ * NeverD contributors; licensed under the Unicorn unit-test terms. */
+#ifdef UC_DECODE_VALUE
+UC_DECODE_VALUE(Code, 0x1000)
+UC_DECODE_VALUE(Data, 0x6000)
+UC_DECODE_VALUE(PageBytes, 0x1000)
+UC_DECODE_VALUE(Timeout, 1000000)
+UC_DECODE_VALUE(UMask, 0x04)
+UC_DECODE_VALUE(P1Offset, 2)
+UC_DECODE_VALUE(InitialMXCSR, 0x1f80)
+UC_DECODE_VALUE(GPVector, 13)
+UC_DECODE_VALUE(SingleInput, 0x3fe00000)
+#endif
+#ifdef UC_DECODE_WIDE_VALUE
+UC_DECODE_WIDE_VALUE(Seed, 0x1122334455667788)
+#endif
+#ifdef UC_DECODE_MODEL
+UC_DECODE_MODEL(UC_CPU_X86_ICELAKE_SERVER)
+UC_DECODE_MODEL(UC_CPU_X86_APX)
+#endif
+#ifdef UC_DECODE_EVEX
+UC_DECODE_EVEX(Move, 0x62, 0xf1, 0xfe, 0x48, 0x6f, 0xc1)
+UC_DECODE_EVEX(Add, 0x62, 0xf1, 0x75, 0x48, 0xfe, 0xc2)
+UC_DECODE_EVEX(Subtract, 0x62, 0xf1, 0x75, 0x48, 0xfa, 0xc2)
+UC_DECODE_EVEX(Compare, 0x62, 0xf3, 0x75, 0x48, 0x1f, 0xc2, 0x01)
+UC_DECODE_EVEX(AddPS, 0x62, 0xf1, 0x74, 0x48, 0x58, 0xc2)
+UC_DECODE_EVEX(Broadcast, 0x62, 0xf2, 0x7d, 0x48, 0x58, 0xc1)
+#endif
+#ifdef UC_DECODE_IGNORED
+/* P1.U remains one for register forms. Only memory forms have X4. */
+UC_DECODE_IGNORED(RegisterB4, 6, false, false,
+                  0x62, 0xf9, 0x74, 0x48, 0x58, 0xc2)
+UC_DECODE_IGNORED(MemoryWithoutIndexX4, 6, true, false,
+                  0x62, 0xf1, 0x70, 0x48, 0x58, 0x00)
+UC_DECODE_IGNORED(RipRelativeB4, 10, true, true,
+                  0x62, 0xf9, 0x74, 0x48, 0x58, 0x05, 0, 0, 0, 0)
+#endif
+#ifdef UC_DECODE_BROADCAST
+UC_DECODE_BROADCAST(0x62, 0xfa, 0x7d, 0x48, 0x58, 0xc1)
+#endif
+#ifdef UC_DECODE_ROUND
+UC_DECODE_ROUND(RoundPS, 0x66, 0x0f, 0x3a, 0x08, 0x00, 0x00)
+UC_DECODE_ROUND(VRoundPS, 0xc4, 0xe3, 0x79, 0x08, 0x00, 0x00)
+UC_DECODE_ROUND(RoundSS, 0x66, 0x0f, 0x3a, 0x0a, 0x00, 0x00)
+UC_DECODE_ROUND(RoundSD, 0x66, 0x0f, 0x3a, 0x0b, 0x00, 0x00)
+#endif
+#ifdef UC_DECODE_ROUND_CASE
+/* Independently observed on Linux x64 with SIGSEGV trap/error context. */
+UC_DECODE_ROUND_CASE(RoundPS, 0, UC_ERR_OK, 0)
+UC_DECODE_ROUND_CASE(RoundPS, 1, UC_ERR_OK, GPVector)
+UC_DECODE_ROUND_CASE(RoundPS, PageBytes - 16, UC_ERR_OK, 0)
+UC_DECODE_ROUND_CASE(RoundPS, PageBytes - 4, UC_ERR_OK, GPVector)
+UC_DECODE_ROUND_CASE(RoundPS, PageBytes, UC_ERR_READ_UNMAPPED, 0)
+UC_DECODE_ROUND_CASE(VRoundPS, 1, UC_ERR_OK, 0)
+UC_DECODE_ROUND_CASE(VRoundPS, PageBytes - 4, UC_ERR_READ_UNMAPPED, 0)
+UC_DECODE_ROUND_CASE(RoundSS, PageBytes - 4, UC_ERR_OK, 0)
+UC_DECODE_ROUND_CASE(RoundSS, PageBytes - 2, UC_ERR_READ_UNMAPPED, 0)
+UC_DECODE_ROUND_CASE(RoundSD, PageBytes - 8, UC_ERR_OK, 0)
+UC_DECODE_ROUND_CASE(RoundSD, PageBytes - 4, UC_ERR_READ_UNMAPPED, 0)
+#endif
+#ifdef UC_DECODE_TEST
+UC_DECODE_TEST(register_u_is_not_an_apx_index_bit)
+UC_DECODE_TEST(round_memory_fault_priority_and_recovery)
+#endif

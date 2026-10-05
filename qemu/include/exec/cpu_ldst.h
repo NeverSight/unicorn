@@ -86,6 +86,11 @@ void cpu_stl_data_ra(CPUArchState *env, abi_ptr ptr,
 void cpu_stq_data_ra(CPUArchState *env, abi_ptr ptr,
                      uint64_t val, uintptr_t retaddr);
 
+#ifdef TARGET_X86_64
+bool x86_evex_store_preflight(CPUArchState *env, abi_ptr ptr, size_t size,
+                              uint64_t val, uintptr_t retaddr);
+#endif
+
 /* Needed for TCG_OVERSIZED_GUEST */
 #include "tcg/tcg.h"
 

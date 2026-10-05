@@ -152,6 +152,9 @@ module Common =
     let UC_CTL_TLB_TYPE = 12
     let UC_CTL_TCG_BUFFER_SIZE = 13
     let UC_CTL_CONTEXT_MODE = 14
+    let UC_CTL_PAUTH_SIGN = 15
+    let UC_CTL_PAUTH_STRIP = 16
+    let UC_CTL_PAUTH_AUTH = 17
     let UC_CTL_CONTEXT_CPU = 1
     let UC_CTL_CONTEXT_MEMORY = 2
 

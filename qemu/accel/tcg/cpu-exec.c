@@ -2,6 +2,7 @@
  *  emulator main execution loop
  *
  *  Copyright (c) 2003-2005 Fabrice Bellard
+ *  Modified by NeverD contributors, 2026-10-04: count-one execution boundaries.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -424,6 +425,12 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         }
 
         cpu->exception_index = -1;
+#if defined(TARGET_X86_64)
+        /* NeverD contributors, 2026-09-30: a hook-delivered exception is
+         * acknowledged just like native IDT delivery. Do not retain it as
+         * an exception in flight when the caller resumes guest execution. */
+        env->old_exception = cpu->exception_index;
+#endif
     }
 
     *ret = EXCP_INTERRUPT;
@@ -608,6 +615,19 @@ int cpu_exec(struct uc_struct *uc, CPUState *cpu)
                 cflags = curr_cflags();
             } else {
                 cpu->cflags_next_tb = -1;
+            }
+
+            /* A one-instruction run must not fetch its successor merely to
+             * reach the count hook. A one-instruction TB also avoids the
+             * precise-SMC restart that counts the same store twice before
+             * it commits. Guest exceptions are handled by the outer loop
+             * before this completed-step boundary is considered. */
+            if (uc_use_bounded_step(uc)) {
+                if (uc->emu_counter >= uc->emu_count) {
+                    uc_emu_stop(uc);
+                    continue;
+                }
+                cflags = (cflags & ~CF_COUNT_MASK) | 1;
             }
 
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
