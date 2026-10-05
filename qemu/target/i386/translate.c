@@ -2817,14 +2817,22 @@ static void gen_enter(DisasContext *s, int esp_addend, int level)
         gen_op_st_v(s, d_ot, s->T1, s->A0);
     }
 
+    /* Validate the final stack location without writing it. Keep both
+     * architectural registers unchanged until every faulting access finishes.
+     */
+    tcg_gen_subi_tl(tcg_ctx, s->T0, s->T1, esp_addend + size * level);
+    gen_lea_v_seg(s, a_ot, s->T0, R_SS, -1);
+#ifdef TARGET_X86_64
+    tcg_gen_movi_i32(tcg_ctx, s->tmp2_i32, size);
+    gen_helper_enter_probe(tcg_ctx, tcg_ctx->cpu_env, s->A0, s->tmp2_i32);
+#endif
+
     /* Copy the FrameTemp value to BP/EBP/RBP at operand size.  A 16-bit
      * ENTER in long mode writes BP only; using the stack-address size here
      * clobbered RBP's high half and disagreed with the host CPU.  */
     gen_op_mov_reg_v(s, d_ot, R_EBP, s->T1);
 
-    /* Compute the final value of ESP.  */
-    tcg_gen_subi_tl(tcg_ctx, s->T1, s->T1, esp_addend + size * level);
-    gen_op_mov_reg_v(s, a_ot, R_ESP, s->T1);
+    gen_op_mov_reg_v(s, a_ot, R_ESP, s->T0);
 }
 
 static void gen_leave(DisasContext *s)
