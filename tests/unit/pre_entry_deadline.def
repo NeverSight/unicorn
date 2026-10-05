@@ -1,0 +1,28 @@
+/* Original pre-entry deadline fixtures, NeverD contributors, 2026-09-30.
+ * Licensed under the same terms as the Unicorn unit tests. */
+#ifdef UC_DEADLINE_VALUE
+UC_DEADLINE_VALUE(Code, 0x10000)
+UC_DEADLINE_VALUE(PageBytes, 4096)
+UC_DEADLINE_VALUE(ShortTimeout, 1000)
+UC_DEADLINE_VALUE(Timeout, 1000000)
+UC_DEADLINE_VALUE(OneInstruction, 1)
+#endif
+#ifdef UC_DEADLINE_CASE
+#ifdef UNICORN_HAS_X86
+/* inc eax; jmp back to inc */
+UC_DEADLINE_CASE(X64DeadlineBeforeEntry, UC_ARCH_X86, UC_MODE_64,
+                 UC_X86_REG_EAX, 0xff, 0xc0, 0xeb, 0xfc)
+#endif
+#ifdef UNICORN_HAS_ARM
+/* add r0, r0, #1; b back to add */
+UC_DEADLINE_CASE(ARMDeadlineBeforeEntry, UC_ARCH_ARM, UC_MODE_ARM,
+                 UC_ARM_REG_R0, 0x01, 0x00, 0x80, 0xe2, 0xfd, 0xff, 0xff,
+                 0xea)
+#endif
+#ifdef UNICORN_HAS_AARCH64
+/* add x0, x0, #1; b back to add */
+UC_DEADLINE_CASE(AArch64DeadlineBeforeEntry, UC_ARCH_ARM64, UC_MODE_ARM,
+                 UC_ARM64_REG_X0, 0x00, 0x04, 0x00, 0x91, 0xff, 0xff, 0xff,
+                 0x17)
+#endif
+#endif

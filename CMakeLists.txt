@@ -1490,6 +1490,24 @@ endif()
 
 if(UNICORN_BUILD_TESTS)
     enable_testing()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       (UNICORN_HAS_X86 OR UNICORN_HAS_ARM OR UNICORN_HAS_AARCH64))
+        add_executable(test_pre_entry_deadline
+            tests/unit/test_pre_entry_deadline.c)
+        target_compile_options(test_pre_entry_deadline PRIVATE
+            ${UNICORN_COMPILE_OPTIONS})
+        if(TARGET unicorn_static)
+            target_link_libraries(test_pre_entry_deadline PRIVATE
+                unicorn_static pthread)
+        else()
+            target_link_libraries(test_pre_entry_deadline PRIVATE
+                unicorn pthread)
+        endif()
+        set_property(TARGET test_pre_entry_deadline APPEND_STRING PROPERTY
+            LINK_FLAGS " -Wl,--wrap=pthread_create")
+        add_test(test_pre_entry_deadline test_pre_entry_deadline)
+        set_tests_properties(test_pre_entry_deadline PROPERTIES TIMEOUT 15)
+    endif()
     foreach(SAMPLE_FILE ${UNICORN_SAMPLE_FILE})
         add_executable(${SAMPLE_FILE}
             ${CMAKE_CURRENT_SOURCE_DIR}/samples/${SAMPLE_FILE}.c
