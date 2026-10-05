@@ -1,0 +1,6 @@
+/* Architectures validated for an indivisible one-instruction TB. */
+#ifdef UC_COUNT_ONE_ARCH
+UC_COUNT_ONE_ARCH(UC_ARCH_X86)
+UC_COUNT_ONE_ARCH(UC_ARCH_ARM)
+UC_COUNT_ONE_ARCH(UC_ARCH_ARM64)
+#endif

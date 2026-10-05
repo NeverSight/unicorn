@@ -157,7 +157,7 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     /* An indirect exit can walk the successor's page tables before returning
      * to cpu_exec. Retire a completed single step before this speculative
      * translation can raise a guest instruction abort. */
-    if (uc->emu_count == 1 && uc->emu_counter >= uc->emu_count) {
+    if (uc_use_bounded_step(uc) && uc->emu_counter >= uc->emu_count) {
         return uc->tcg_ctx->code_gen_epilogue;
     }
 

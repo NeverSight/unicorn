@@ -1,0 +1,28 @@
+/* Original ENTER operand-size regressions, NeverD contributors, 2026.
+ * Licensed under the same terms as the Unicorn unit tests. */
+#ifdef UC_X86_ENTER_CONSTANT
+UC_X86_ENTER_CONSTANT(MaxCodeBytes, 5)
+UC_X86_ENTER_CONSTANT(StackWindowBytes, 64)
+UC_X86_ENTER_CONSTANT(StackFill, 0xa5)
+UC_X86_ENTER_CONSTANT(CodeAddress, 0x1000)
+UC_X86_ENTER_CONSTANT(PageBytes, 0x1000)
+UC_X86_ENTER_CONSTANT(StackBase, 0x10000)
+UC_X86_ENTER_CONSTANT(StackBytes, 0x8000)
+UC_X86_ENTER_CONSTANT(InitialStack, 0x14080)
+UC_X86_ENTER_CONSTANT(InitialFlags, 0x8d7)
+UC_X86_ENTER_CONSTANT(Timeout, 1000000)
+#endif
+
+#ifdef UC_X86_ENTER_CASE
+// Name, mode, initial BP, expected BP, expected SP, pushed bytes, code size,
+// code.
+UC_X86_ENTER_CASE(WordInLongMode, UC_MODE_64, UINT64_C(0xfedcba9876543210),
+                  UINT64_C(0xfedcba987654407e), 0x1405e, 2, 5, 0x66, 0xc8, 0x20,
+                  0x00, 0x00)
+UC_X86_ENTER_CASE(WordInProtectedMode, UC_MODE_32, 0x76543210, 0x7654407e,
+                  0x1405e, 2, 5, 0x66, 0xc8, 0x20, 0x00, 0x00)
+UC_X86_ENTER_CASE(QuadInLongMode, UC_MODE_64, UINT64_C(0xfedcba9876543210),
+                  0x14078, 0x14058, 8, 4, 0xc8, 0x20, 0x00, 0x00)
+UC_X86_ENTER_CASE(DoubleInProtectedMode, UC_MODE_32, 0x76543210, 0x1407c,
+                  0x1405c, 4, 4, 0xc8, 0x20, 0x00, 0x00)
+#endif

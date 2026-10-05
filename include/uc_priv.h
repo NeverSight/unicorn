@@ -462,6 +462,23 @@ static inline void uc_add_exit(uc_engine *uc, uint64_t addr)
     g_tree_insert(uc->ctl_exits, (gpointer)new_exit, (gpointer)1);
 }
 
+/* Other targets retain their count hook contract. In particular, a MIPS
+ * branch and its delay slot must complete together before stopping. */
+static inline bool uc_use_bounded_step(const uc_engine *uc)
+{
+    if (uc->emu_count != 1) {
+        return false;
+    }
+    switch (uc->arch) {
+#define UC_COUNT_ONE_ARCH(Arch) case Arch:
+#include "count_one_architectures.def"
+#undef UC_COUNT_ONE_ARCH
+        return true;
+    default:
+        return false;
+    }
+}
+
 // This function has to exist since we would like to accept uint32_t or
 // it's complex to achieve so.
 static inline int uc_addr_is_exit(uc_engine *uc, uint64_t addr)
