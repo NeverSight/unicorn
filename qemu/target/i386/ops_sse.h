@@ -864,20 +864,55 @@ void helper_gf2p8affineinvqb_xmm(CPUX86State *env, Reg *d, Reg *x, Reg *a,
         d->ZMM_D(0) = F(64, d->ZMM_D(0), s->ZMM_D(0));                  \
     }
 
-#define FPU_ADD(size, a, b) float ## size ## _add(a, b, &env->sse_status)
-#define FPU_SUB(size, a, b) float ## size ## _sub(a, b, &env->sse_status)
-#define FPU_MUL(size, a, b) float ## size ## _mul(a, b, &env->sse_status)
-#define FPU_DIV(size, a, b) float ## size ## _div(a, b, &env->sse_status)
-#define FPU_SQRT(size, a, b) float ## size ## _sqrt(b, &env->sse_status)
+/* NeverD contributors, 2026-09-30: SSE reports a denormal input even when DAZ is disabled. SoftFloat only
+ * reports flushed inputs, since other target ISAs have different rules.
+ * NaN propagation takes priority over the denormal-operand exception. */
+static void sse_denormal32(float32 a, float32 b, CPUX86State *env)
+{
+    if (!(env->mxcsr & SSE_DAZ) &&
+        !float32_is_any_nan(a) && !float32_is_any_nan(b) &&
+        (float32_is_denormal(a) || float32_is_denormal(b))) {
+        float_raise(float_flag_input_denormal, &env->sse_status);
+    }
+}
+
+static void sse_denormal64(float64 a, float64 b, CPUX86State *env)
+{
+    if (!(env->mxcsr & SSE_DAZ) &&
+        !float64_is_any_nan(a) && !float64_is_any_nan(b) &&
+        (float64_is_denormal(a) || float64_is_denormal(b))) {
+        float_raise(float_flag_input_denormal, &env->sse_status);
+    }
+}
+
+#define FPU_ADD(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _add(a, b, &env->sse_status))
+#define FPU_SUB(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _sub(a, b, &env->sse_status))
+#define FPU_MUL(size, a, b) \
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _mul(a, b, &env->sse_status))
+#define FPU_DIV(size, a, b) \
+    ((float ## size ## _is_zero(b) ? (void)0 : \
+      sse_denormal ## size(a, b, env)), \
+     float ## size ## _div(a, b, &env->sse_status))
+#define FPU_SQRT(size, a, b) \
+    ((float ## size ## _is_neg(b) ? (void)0 : \
+      sse_denormal ## size(b, b, env)), \
+     float ## size ## _sqrt(b, &env->sse_status))
 
 /* Note that the choice of comparison op here is important to get the
  * special cases right: for min and max Intel specifies that (-0,0),
  * (NaN, anything) and (anything, NaN) return the second argument.
  */
 #define FPU_MIN(size, a, b)                                     \
-    (float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
 #define FPU_MAX(size, a, b)                                     \
-    (float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
+    (sse_denormal ## size(a, b, env), \
+     float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
 
 SSE_HELPER_S(add, FPU_ADD)
 SSE_HELPER_S(sub, FPU_SUB)
