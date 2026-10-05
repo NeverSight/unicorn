@@ -20,6 +20,9 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
+ *
+ * Modified by NeverD contributors on 2026-09-30: retain a stop requested by
+ * the deadline timer before entering the guest CPU execution loop.
  */
 
 #include "sysemu/tcg.h"
@@ -87,6 +90,12 @@ static int tcg_cpu_exec(struct uc_struct *uc)
     bool finish = false;
 
     while (!uc->exit_request) {
+        // vm_start may have reset cpu->exit_request after the timer stopped us.
+        // The engine stop remains authoritative before any guest instruction.
+        if (uc->stop_request) {
+            finish = true;
+            break;
+        }
         CPUState *cpu = uc->cpu;
 
         //qemu_clock_enable(QEMU_CLOCK_VIRTUAL,

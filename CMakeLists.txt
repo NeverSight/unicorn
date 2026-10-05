@@ -1272,6 +1272,7 @@ if(UNICORN_HAS_X86)
     set(UNICORN_SAMPLE_FILE ${UNICORN_SAMPLE_FILE} sample_x86 sample_x86_32_gdt_and_seg_regs sample_batch_reg mem_apis shellcode sample_mmu)
     target_link_libraries(x86_64-softmmu PRIVATE unicorn-common)
     set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_x86 test_x86_apx_state test_x86_approx14 test_x86_approx14_memory test_x86_approx28 test_x86_approx28_memory test_x86_vrange_vscalef test_x86_getexp_getmant)
+    list(APPEND UNICORN_TEST_FILE test_x86_exception_ack)
 endif()
 if(UNICORN_HAS_ARM)
     set(UNICORN_COMPILE_OPTIONS ${UNICORN_COMPILE_OPTIONS} -DUNICORN_HAS_ARM)
@@ -1489,6 +1490,24 @@ endif()
 
 if(UNICORN_BUILD_TESTS)
     enable_testing()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       (UNICORN_HAS_X86 OR UNICORN_HAS_ARM OR UNICORN_HAS_AARCH64))
+        add_executable(test_pre_entry_deadline
+            tests/unit/test_pre_entry_deadline.c)
+        target_compile_options(test_pre_entry_deadline PRIVATE
+            ${UNICORN_COMPILE_OPTIONS})
+        if(TARGET unicorn_static)
+            target_link_libraries(test_pre_entry_deadline PRIVATE
+                unicorn_static pthread)
+        else()
+            target_link_libraries(test_pre_entry_deadline PRIVATE
+                unicorn pthread)
+        endif()
+        set_property(TARGET test_pre_entry_deadline APPEND_STRING PROPERTY
+            LINK_FLAGS " -Wl,--wrap=pthread_create")
+        add_test(test_pre_entry_deadline test_pre_entry_deadline)
+        set_tests_properties(test_pre_entry_deadline PROPERTIES TIMEOUT 15)
+    endif()
     foreach(SAMPLE_FILE ${UNICORN_SAMPLE_FILE})
         add_executable(${SAMPLE_FILE}
             ${CMAKE_CURRENT_SOURCE_DIR}/samples/${SAMPLE_FILE}.c

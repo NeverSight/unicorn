@@ -1,0 +1,17 @@
+/* Original exception-delivery regression, NeverD contributors, 2026-09-30. */
+#ifdef UC_X86_ACK_VALUE
+UC_X86_ACK_VALUE(Code, 0x1000)
+UC_X86_ACK_VALUE(PageBytes, 0x1000)
+UC_X86_ACK_VALUE(Timeout, 1000000)
+UC_X86_ACK_VALUE(Iterations, 8)
+UC_X86_ACK_VALUE(Dividend, 9)
+UC_X86_ACK_VALUE(Divisor, 3)
+UC_X86_ACK_VALUE(DivideVector, 0)
+#endif
+#ifdef UC_X86_ACK_BYTES
+UC_X86_ACK_BYTES(Divide, 0x48, 0xf7, 0xf1)
+#endif
+#ifdef UC_X86_ACK_TEST
+UC_X86_ACK_TEST(RepeatedDelivery)
+UC_X86_ACK_TEST(ContextAfterDelivery)
+#endif
