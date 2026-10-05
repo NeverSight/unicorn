@@ -2,6 +2,7 @@
  * Tiny Code Generator for QEMU
  *
  * Copyright (c) 2008 Fabrice Bellard
+ * Modified by NeverD contributors, 2026-10-04: bounded successor lookup.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -152,6 +153,13 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     target_ulong cs_base, pc;
     uint32_t flags;
     struct uc_struct *uc = (struct uc_struct *)cpu->uc;
+
+    /* An indirect exit can walk the successor's page tables before returning
+     * to cpu_exec. Retire a completed single step before this speculative
+     * translation can raise a guest instruction abort. */
+    if (uc->emu_count == 1 && uc->emu_counter >= uc->emu_count) {
+        return uc->tcg_ctx->code_gen_epilogue;
+    }
 
     tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, curr_cflags());
     if (tb == NULL) {

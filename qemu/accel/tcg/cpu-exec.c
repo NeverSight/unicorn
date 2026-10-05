@@ -2,6 +2,7 @@
  *  emulator main execution loop
  *
  *  Copyright (c) 2003-2005 Fabrice Bellard
+ *  Modified by NeverD contributors, 2026-10-04: count-one execution boundaries.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -614,6 +615,19 @@ int cpu_exec(struct uc_struct *uc, CPUState *cpu)
                 cflags = curr_cflags();
             } else {
                 cpu->cflags_next_tb = -1;
+            }
+
+            /* A one-instruction run must not fetch its successor merely to
+             * reach the count hook. A one-instruction TB also avoids the
+             * precise-SMC restart that counts the same store twice before
+             * it commits. Guest exceptions are handled by the outer loop
+             * before this completed-step boundary is considered. */
+            if (uc->emu_count == 1) {
+                if (uc->emu_counter >= uc->emu_count) {
+                    uc_emu_stop(uc);
+                    continue;
+                }
+                cflags = (cflags & ~CF_COUNT_MASK) | 1;
             }
 
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
