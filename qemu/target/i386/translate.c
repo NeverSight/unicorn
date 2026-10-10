@@ -22244,7 +22244,17 @@ static void i386_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
     TCGContext *tcg_ctx = dc->uc->tcg_ctx;
 
     dc->prev_pc = dc->base.pc_next - dc->cs_base;
-    tcg_gen_insn_start(tcg_ctx, dc->base.pc_next, dc->cc_op);
+    /* A code hook materializes lazy flags before the instruction executes.
+     * A later memory callback or fault restores this instruction's metadata;
+     * reinstating the earlier CC operation would reinterpret materialized
+     * flags as arithmetic operands. Keep the runtime tag, including any flag
+     * replacement made by the code hook itself. Unobserved instructions still
+     * need their ordinary lazy-operation snapshot. */
+    const CCOp restore_cc_op =
+        HOOK_EXISTS_BOUNDED(dc->uc, UC_HOOK_CODE, dc->base.pc_next)
+            ? CC_OP_DYNAMIC
+            : dc->cc_op;
+    tcg_gen_insn_start(tcg_ctx, dc->base.pc_next, restore_cc_op);
 }
 
 static bool i386_tr_breakpoint_check(DisasContextBase *dcbase, CPUState *cpu,
