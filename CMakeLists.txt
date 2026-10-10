@@ -1279,6 +1279,7 @@ if(UNICORN_HAS_X86)
         test_x86_enter_faults
         test_x86_status_flags
         test_x86_hook_flags
+        test_write_after
         test_x86_loop_targets
         test_x86_branch_targets
         test_ctl_cache_arguments)

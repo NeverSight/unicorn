@@ -92,6 +92,7 @@ public interface UnicornConst {
     public static final int UC_MEM_READ_PROT = 23;
     public static final int UC_MEM_FETCH_PROT = 24;
     public static final int UC_MEM_READ_AFTER = 25;
+    public static final int UC_MEM_WRITE_AFTER = 26;
 
     public static final int UC_TCG_OP_SUB = 0;
     public static final int UC_TCG_OP_FLAG_CMP = 1;
@@ -114,6 +115,7 @@ public interface UnicornConst {
     public static final int UC_HOOK_EDGE_GENERATED = 32768;
     public static final int UC_HOOK_TCG_OPCODE = 65536;
     public static final int UC_HOOK_TLB_FILL = 131072;
+    public static final int UC_HOOK_MEM_WRITE_AFTER = 262144;
     public static final int UC_HOOK_MEM_UNMAPPED = 112;
     public static final int UC_HOOK_MEM_PROT = 896;
     public static final int UC_HOOK_MEM_READ_INVALID = 144;

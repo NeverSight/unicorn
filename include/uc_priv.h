@@ -219,6 +219,7 @@ typedef enum uc_hook_idx {
     UC_HOOK_EDGE_GENERATED_IDX,
     UC_HOOK_TCG_OPCODE_IDX,
     UC_HOOK_TLB_FILL_IDX,
+    UC_HOOK_MEM_WRITE_AFTER_IDX,
 
     UC_HOOK_MAX,
 } uc_hook_idx;

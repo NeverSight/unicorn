@@ -890,7 +890,8 @@ public class Unicorn
     /**
      * Register a {@code UC_HOOK_MEM_VALID} hook
      * ({@code UC_HOOK_MEM_[READ,WRITE,FETCH]} and/or
-     * {@code UC_HOOK_MEM_READ_AFTER}. The registered callback function will
+     * {@code UC_HOOK_MEM_READ_AFTER} or {@code UC_HOOK_MEM_WRITE_AFTER}.
+     * The registered callback function will
      * be invoked whenever a corresponding memory operation is performed
      * within the address range begin <= addr <= end. For the special case in
      * which begin > end, the callback will be invoked for ALL memory

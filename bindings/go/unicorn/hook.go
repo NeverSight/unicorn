@@ -111,7 +111,10 @@ func (u *uc) HookAdd(htype int, cb interface{}, begin, end uint64, extra ...int)
 	switch htype {
 	case HOOK_BLOCK, HOOK_CODE:
 		callback = C.hookCode_cgo
-	case HOOK_MEM_READ, HOOK_MEM_WRITE, HOOK_MEM_READ | HOOK_MEM_WRITE:
+	case HOOK_MEM_READ, HOOK_MEM_WRITE, HOOK_MEM_READ | HOOK_MEM_WRITE,
+		HOOK_MEM_WRITE_AFTER, HOOK_MEM_READ | HOOK_MEM_WRITE_AFTER,
+		HOOK_MEM_WRITE | HOOK_MEM_WRITE_AFTER,
+		HOOK_MEM_READ | HOOK_MEM_WRITE | HOOK_MEM_WRITE_AFTER:
 		callback = C.hookMemAccess_cgo
 	case HOOK_INTR:
 		callback = C.hookInterrupt_cgo
