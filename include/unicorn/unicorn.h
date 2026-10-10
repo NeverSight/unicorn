@@ -276,6 +276,7 @@ typedef enum uc_mem_type {
     UC_MEM_READ_PROT,      // Read from read protected, but mapped, memory
     UC_MEM_FETCH_PROT,     // Fetch from non-executable, but mapped, memory
     UC_MEM_READ_AFTER,     // Memory is read from (successful access)
+    UC_MEM_WRITE_AFTER,    // RAM was written (successful access)
 } uc_mem_type;
 
 /*
@@ -408,6 +409,12 @@ typedef enum uc_hook_type {
     // Register tlb fill request hook on the virtuall addresses.
     // The callback will be triggert if the tlb cache don't contain an address.
     UC_HOOK_TLB_FILL = 1 << 17,
+    // Observe completed RAM stores, including writes of the existing value.
+    // Unlike UC_HOOK_MEM_WRITE, this is not called for a faulting access or
+    // an internal self-modifying-code retry before the store commits. It does
+    // not observe MMIO or host uc_mem_write calls. The containing instruction
+    // may still be in progress; stopping cannot undo the observed write.
+    UC_HOOK_MEM_WRITE_AFTER = 1 << 18,
 } uc_hook_type;
 
 // Hook type for all events of unmapped memory access

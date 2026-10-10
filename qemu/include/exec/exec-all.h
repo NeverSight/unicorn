@@ -493,6 +493,8 @@ static inline bool uc_mem_hook_installed(struct uc_struct *uc, hwaddr paddr)
         return true;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_MEM_WRITE, paddr))
         return true;
+    if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_MEM_WRITE_AFTER, paddr))
+        return true;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_MEM_WRITE_UNMAPPED, paddr))
         return true;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_MEM_WRITE_PROT, paddr))

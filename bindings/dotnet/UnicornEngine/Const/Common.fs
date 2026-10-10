@@ -95,6 +95,7 @@ module Common =
     let UC_MEM_READ_PROT = 23
     let UC_MEM_FETCH_PROT = 24
     let UC_MEM_READ_AFTER = 25
+    let UC_MEM_WRITE_AFTER = 26
 
     let UC_TCG_OP_SUB = 0
     let UC_TCG_OP_FLAG_CMP = 1
@@ -117,6 +118,7 @@ module Common =
     let UC_HOOK_EDGE_GENERATED = 32768
     let UC_HOOK_TCG_OPCODE = 65536
     let UC_HOOK_TLB_FILL = 131072
+    let UC_HOOK_MEM_WRITE_AFTER = 262144
     let UC_HOOK_MEM_UNMAPPED = 112
     let UC_HOOK_MEM_PROT = 896
     let UC_HOOK_MEM_READ_INVALID = 144

@@ -594,6 +594,10 @@ int cpu_exec(struct uc_struct *uc, CPUState *cpu)
         g_assert(cc == CPU_GET_CLASS(cpu));
 #endif /* buggy compiler */
 
+        // A precise SMC restart can unwind an unaligned access's recursive
+        // byte stores without returning through their cleanup. The next
+        // instruction attempt is not part of that recursive memory access.
+        uc->size_recur_mem = 0;
         assert_no_pages_locked();
     }
 

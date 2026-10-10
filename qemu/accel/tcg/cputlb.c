@@ -2645,7 +2645,7 @@ static inline void store_helper(CPUArchState *env, target_ulong addr,
         } else {
             store_memop(haddr, val, op);
         }
-        return;
+        goto store_done;
     }
 
     /* Handle slow unaligned access (it spans two pages or IO).  */
@@ -2711,11 +2711,28 @@ static inline void store_helper(CPUArchState *env, target_ulong addr,
             helper_ret_stb_mmu(env, addr + i, val8, oi, retaddr);
         }
         uc->size_recur_mem = old_size;
-        return;
+        goto store_done;
     }
 
     haddr = (void *)((uintptr_t)addr + entry->addend);
     store_memop(haddr, val, op);
+
+store_done:
+    // Recursive byte stores are reported once, after the whole access.
+    if (!uc->size_recur_mem) {
+        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_AFTER) {
+            if (hook->to_delete || !HOOK_BOUND_CHECK(hook, paddr))
+                continue;
+            if (!synced && !uc->skip_sync_pc_on_exit && retaddr) {
+                cpu_restore_state(uc->cpu, retaddr, false);
+                synced = true;
+            }
+            JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(
+                uc, UC_MEM_WRITE_AFTER, paddr, size, val, hook->user_data));
+            if (uc->stop_request)
+                break;
+        }
+    }
 }
 
 void helper_ret_stb_mmu(CPUArchState *env, target_ulong addr, uint8_t val,

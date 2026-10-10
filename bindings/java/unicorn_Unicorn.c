@@ -933,7 +933,8 @@ Java_unicorn_Unicorn__1hook_1add__JILunicorn_Hook_2Ljava_lang_Object_2JJ(
     } else if ((type & UC_HOOK_MEM_INVALID) && !(type & ~UC_HOOK_MEM_INVALID)) {
         hook_sig = sig_EventMemHook;
         hook_callback = cb_eventmem;
-    } else if ((type & UC_HOOK_MEM_VALID) && !(type & ~UC_HOOK_MEM_VALID)) {
+    } else if ((type & (UC_HOOK_MEM_VALID | UC_HOOK_MEM_WRITE_AFTER)) &&
+               !(type & ~(UC_HOOK_MEM_VALID | UC_HOOK_MEM_WRITE_AFTER))) {
         hook_sig = sig_MemHook;
         hook_callback = cb_hookmem;
     } else if (type == UC_HOOK_INSN_INVALID) {

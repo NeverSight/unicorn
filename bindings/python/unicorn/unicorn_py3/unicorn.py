@@ -1122,6 +1122,7 @@ class Uc(RegStateManager):
             uc.UC_HOOK_MEM_FETCH_PROT     : __hook_invalid_mem,
             uc.UC_HOOK_MEM_READ           : __hook_mem,
             uc.UC_HOOK_MEM_WRITE          : __hook_mem,
+            uc.UC_HOOK_MEM_WRITE_AFTER    : __hook_mem,
             uc.UC_HOOK_MEM_FETCH          : __hook_mem,
             # uc.UC_HOOK_MEM_READ_AFTER
             uc.UC_HOOK_INSN_INVALID       : __hook_invalid_insn,
