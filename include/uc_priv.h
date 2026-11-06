@@ -452,7 +452,10 @@ struct uc_context {
     bool ramblock_freed;  // wheter there was a some ramblock freed
     RAMBlock *last_block; // The last element of the ramblock list
     FlatView *fv;         // The current flatview of the memory
-    char data[0];         // context
+    // The saved CPU state. Register readers treat this as the CPU's own state
+    // type, whose 16-byte aligned fields an x86 compiler reads with aligned
+    // vector operands, so the header must not leave it misaligned.
+    QEMU_ALIGN(16, char data[0]);
 };
 
 // We have to support 32bit system so we can't hold uint64_t on void*

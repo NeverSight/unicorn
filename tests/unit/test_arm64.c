@@ -1043,6 +1043,29 @@ static void test_arm64_atomic_minmax(void)
     }
 }
 
+// FPCR and FPSR are computed from the saved CPU state, including fields that an
+// x86 compiler reads with aligned vector operands.
+static void test_arm64_context_reads_fp_status(void)
+{
+    uc_engine *uc;
+    uc_context *context;
+    uint32_t fpcr = 0, fpsr = 0, saved_fpcr = 0, saved_fpsr = 0;
+
+    OK(uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &uc));
+    fpcr = 0x00c00000;
+    fpsr = 0x10;
+    OK(uc_reg_write(uc, UC_ARM64_REG_FPCR, &fpcr));
+    OK(uc_reg_write(uc, UC_ARM64_REG_FPSR, &fpsr));
+    OK(uc_context_alloc(uc, &context));
+    OK(uc_context_save(uc, context));
+    OK(uc_context_reg_read(context, UC_ARM64_REG_FPCR, &saved_fpcr));
+    OK(uc_context_reg_read(context, UC_ARM64_REG_FPSR, &saved_fpsr));
+    TEST_CHECK(saved_fpcr == fpcr);
+    TEST_CHECK(saved_fpsr == fpsr);
+    OK(uc_context_free(context));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm64_until", test_arm64_until},
 #define UC_ARM64_ATOMIC_TEST(Name) {#Name, Name},
 #include "arm64_atomic_cases.inc"
@@ -1067,4 +1090,6 @@ TEST_LIST = {{"test_arm64_until", test_arm64_until},
              {"test_arm64_pc_guarantee", test_arm64_pc_guarantee},
              {"test_arm64_pauth_vanilla", test_arm64_pauth_vanilla},
              {"test_arm64_pauth_ctl", test_arm64_pauth_ctl},
+             {"test_arm64_context_reads_fp_status",
+              test_arm64_context_reads_fp_status},
              {NULL, NULL}};
