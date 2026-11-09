@@ -27,19 +27,15 @@
 /* Data format min and max values */
 #define DF_BITS(df) (1ULL << ((df) + 3))
 
-#define DF_MAX_INT(df)  (int64_t)((1LL << (DF_BITS(df) - 1)) - 1)
-#define M_MAX_INT(m)    (int64_t)((1LL << ((m)         - 1)) - 1)
+#define DF_MAX_INT(df)  (int64_t)((1ULL << (DF_BITS(df) - 1)) - 1)
+#define M_MAX_INT(m)    (int64_t)((1ULL << ((m)         - 1)) - 1)
+#define DF_MIN_INT(df)  (-DF_MAX_INT(df) - 1)
+#define M_MIN_INT(m)    (-M_MAX_INT(m) - 1)
 
 #ifdef _MSC_VER
-#define DF_MIN_INT(df)  (int64_t)(0 - (1LL << (DF_BITS(df) - 1)))
-#define M_MIN_INT(m)    (int64_t)(0 - (1LL << ((m)         - 1)))
-
 #define DF_MAX_UINT(df) (uint64_t)(0xffffffffffffffffULL >> (64 - DF_BITS(df)))
 #define M_MAX_UINT(m)   (uint64_t)(0xffffffffffffffffULL >> (64 - (m)))
 #else
-#define DF_MIN_INT(df)  (int64_t)(-(1LL << (DF_BITS(df) - 1)))
-#define M_MIN_INT(m)    (int64_t)(-(1LL << ((m)         - 1)))
-
 #define DF_MAX_UINT(df) (uint64_t)(-1ULL >> (64 - DF_BITS(df)))
 #define M_MAX_UINT(m)   (uint64_t)(-1ULL >> (64 - (m)))
 #endif
@@ -814,10 +810,18 @@ void helper_msa_bset_d(CPUMIPSState *env, uint32_t wd, uint32_t ws, uint32_t wt)
  */
 
 
+static inline uint64_t msa_unsigned_magnitude(int64_t arg)
+{
+    /* INT64_MIN has a valid unsigned magnitude, but cannot be negated in
+     * signed host arithmetic. Keep that magnitude for saturation/comparison.
+     */
+    return arg >= 0 ? (uint64_t)arg : 0 - (uint64_t)arg;
+}
+
 static inline int64_t msa_add_a_df(uint32_t df, int64_t arg1, int64_t arg2)
 {
-    uint64_t abs_arg1 = arg1 >= 0 ? arg1 : -arg1;
-    uint64_t abs_arg2 = arg2 >= 0 ? arg2 : -arg2;
+    uint64_t abs_arg1 = msa_unsigned_magnitude(arg1);
+    uint64_t abs_arg2 = msa_unsigned_magnitude(arg2);
     return abs_arg1 + abs_arg2;
 }
 
@@ -891,8 +895,8 @@ void helper_msa_add_a_d(CPUMIPSState *env,
 static inline int64_t msa_adds_a_df(uint32_t df, int64_t arg1, int64_t arg2)
 {
     uint64_t max_int = (uint64_t)DF_MAX_INT(df);
-    uint64_t abs_arg1 = arg1 >= 0 ? arg1 : -arg1;
-    uint64_t abs_arg2 = arg2 >= 0 ? arg2 : -arg2;
+    uint64_t abs_arg1 = msa_unsigned_magnitude(arg1);
+    uint64_t abs_arg2 = msa_unsigned_magnitude(arg2);
     if (abs_arg1 > max_int || abs_arg2 > max_int) {
         return (int64_t)max_int;
     } else {
@@ -2269,8 +2273,8 @@ void helper_msa_div_u_d(CPUMIPSState *env,
 
 static inline int64_t msa_max_a_df(uint32_t df, int64_t arg1, int64_t arg2)
 {
-    uint64_t abs_arg1 = arg1 >= 0 ? arg1 : -arg1;
-    uint64_t abs_arg2 = arg2 >= 0 ? arg2 : -arg2;
+    uint64_t abs_arg1 = msa_unsigned_magnitude(arg1);
+    uint64_t abs_arg2 = msa_unsigned_magnitude(arg2);
     return abs_arg1 > abs_arg2 ? arg1 : arg2;
 }
 
@@ -2489,8 +2493,8 @@ void helper_msa_max_u_d(CPUMIPSState *env,
 
 static inline int64_t msa_min_a_df(uint32_t df, int64_t arg1, int64_t arg2)
 {
-    uint64_t abs_arg1 = arg1 >= 0 ? arg1 : -arg1;
-    uint64_t abs_arg2 = arg2 >= 0 ? arg2 : -arg2;
+    uint64_t abs_arg1 = msa_unsigned_magnitude(arg1);
+    uint64_t abs_arg2 = msa_unsigned_magnitude(arg2);
     return abs_arg1 < abs_arg2 ? arg1 : arg2;
 }
 

@@ -470,6 +470,9 @@ else()
     endif()
     add_compile_options(
         ${UNICORN_CFLAGS}
+        # QEMU's configure requires wrapping signed arithmetic and shifts.
+        # CMake builds helpers directly, so its actual flags need this too.
+        -fwrapv
         -I${CMAKE_CURRENT_SOURCE_DIR}/qemu/tcg/${UNICORN_TARGET_ARCH}
         -D_GNU_SOURCE
         -D_FILE_OFFSET_BITS=64
@@ -1313,7 +1316,7 @@ if(UNICORN_HAS_MIPS)
     target_link_libraries(mipsel-softmmu PRIVATE unicorn-common)
     target_link_libraries(mips64-softmmu PRIVATE unicorn-common)
     target_link_libraries(mips64el-softmmu PRIVATE unicorn-common)
-    set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_mips)
+    set(UNICORN_TEST_FILE ${UNICORN_TEST_FILE} test_mips test_mips_msa_integer)
 endif()
 if(UNICORN_HAS_SPARC)
     set(UNICORN_COMPILE_OPTIONS ${UNICORN_COMPILE_OPTIONS} -DUNICORN_HAS_SPARC)
