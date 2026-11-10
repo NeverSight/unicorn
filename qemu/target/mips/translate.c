@@ -23376,8 +23376,12 @@ static void gen_mipsdsp_multiply(DisasContext *ctx, uint32_t op1, uint32_t op2,
     TCGv v1_t;
     TCGv v2_t;
 
-    if ((ret == 0) && (check_ret == 1)) {
-        /* Treat as NOP. */
+    /* These DSP r1 packed multiplies still write sticky OUFLAG21 and check
+     * Status.MX when their GPR result is discarded. */
+    bool packed_r1 = op1 == OPC_ADDU_QB_DSP &&
+                     (op2 == OPC_MULEU_S_PH_QBL || op2 == OPC_MULEU_S_PH_QBR ||
+                      op2 == OPC_MULQ_RS_PH);
+    if ((ret == 0) && (check_ret == 1) && !packed_r1) {
         return;
     }
 
@@ -23622,15 +23626,15 @@ static void gen_mipsdsp_multiply(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_MULEU_S_PH_QBL:
             check_dsp(ctx);
-            gen_helper_muleu_s_ph_qbl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_muleu_s_ph_qbl(tcg_ctx, ret ? tcg_ctx->cpu_gpr[ret] : v1_t, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MULEU_S_PH_QBR:
             check_dsp(ctx);
-            gen_helper_muleu_s_ph_qbr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_muleu_s_ph_qbr(tcg_ctx, ret ? tcg_ctx->cpu_gpr[ret] : v1_t, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MULQ_RS_PH:
             check_dsp(ctx);
-            gen_helper_mulq_rs_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_mulq_rs_ph(tcg_ctx, ret ? tcg_ctx->cpu_gpr[ret] : v1_t, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MULEQ_S_W_PHL:
             check_dsp(ctx);
