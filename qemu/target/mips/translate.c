@@ -23380,7 +23380,8 @@ static void gen_mipsdsp_multiply(DisasContext *ctx, uint32_t op1, uint32_t op2,
      * Status.MX when their GPR result is discarded. */
     bool packed_r1 = op1 == OPC_ADDU_QB_DSP &&
                      (op2 == OPC_MULEU_S_PH_QBL || op2 == OPC_MULEU_S_PH_QBR ||
-                      op2 == OPC_MULQ_RS_PH);
+                      op2 == OPC_MULQ_RS_PH || op2 == OPC_MULEQ_S_W_PHL ||
+                      op2 == OPC_MULEQ_S_W_PHR);
     if ((ret == 0) && (check_ret == 1) && !packed_r1) {
         return;
     }
@@ -23638,11 +23639,11 @@ static void gen_mipsdsp_multiply(DisasContext *ctx, uint32_t op1, uint32_t op2,
             break;
         case OPC_MULEQ_S_W_PHL:
             check_dsp(ctx);
-            gen_helper_muleq_s_w_phl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_muleq_s_w_phl(tcg_ctx, ret ? tcg_ctx->cpu_gpr[ret] : v1_t, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MULEQ_S_W_PHR:
             check_dsp(ctx);
-            gen_helper_muleq_s_w_phr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_muleq_s_w_phr(tcg_ctx, ret ? tcg_ctx->cpu_gpr[ret] : v1_t, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MULQ_S_PH:
             check_dsp_r2(ctx);
