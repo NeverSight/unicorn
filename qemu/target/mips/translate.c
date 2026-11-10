@@ -22671,9 +22671,11 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
     TCGv v1_t;
     TCGv v2_t;
 
-    if (ret == 0) {
-        /* Treat as NOP. */
-        return;
+    /* Discard the GPR result only; helpers still update DSPControl and
+     * feature checks still apply to a zero destination. */
+    TCGv result = ret ? tcg_ctx->cpu_gpr[ret] : tcg_temp_new(tcg_ctx);
+    if (!ret) {
+        tcg_gen_movi_tl(tcg_ctx, result, 0);
     }
 
     v1_t = tcg_temp_new(tcg_ctx);
@@ -22688,40 +22690,40 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         check_dsp_r2(ctx);
         switch (op2) {
         case OPC_ADDUH_QB:
-            gen_helper_adduh_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_adduh_qb(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDUH_R_QB:
-            gen_helper_adduh_r_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_adduh_r_qb(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDQH_PH:
-            gen_helper_addqh_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_addqh_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDQH_R_PH:
-            gen_helper_addqh_r_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_addqh_r_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDQH_W:
-            gen_helper_addqh_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_addqh_w(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDQH_R_W:
-            gen_helper_addqh_r_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_addqh_r_w(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBUH_QB:
-            gen_helper_subuh_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subuh_qb(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBUH_R_QB:
-            gen_helper_subuh_r_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subuh_r_qb(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBQH_PH:
-            gen_helper_subqh_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subqh_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBQH_R_PH:
-            gen_helper_subqh_r_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subqh_r_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBQH_W:
-            gen_helper_subqh_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subqh_w(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBQH_R_W:
-            gen_helper_subqh_r_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subqh_r_w(tcg_ctx, result, v1_t, v2_t);
             break;
         }
         break;
@@ -22729,58 +22731,58 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_ABSQ_S_QB:
             check_dsp_r2(ctx);
-            gen_helper_absq_s_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_qb(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ABSQ_S_PH:
             check_dsp(ctx);
-            gen_helper_absq_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_ph(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ABSQ_S_W:
             check_dsp(ctx);
-            gen_helper_absq_s_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_w(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_PRECEQ_W_PHL:
             check_dsp(ctx);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, 0xFFFF0000);
-            tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], tcg_ctx->cpu_gpr[ret]);
+            tcg_gen_andi_tl(tcg_ctx, result, v2_t, 0xFFFF0000);
+            tcg_gen_ext32s_tl(tcg_ctx, result, result);
             break;
         case OPC_PRECEQ_W_PHR:
             check_dsp(ctx);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, 0x0000FFFF);
-            tcg_gen_shli_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], tcg_ctx->cpu_gpr[ret], 16);
-            tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], tcg_ctx->cpu_gpr[ret]);
+            tcg_gen_andi_tl(tcg_ctx, result, v2_t, 0x0000FFFF);
+            tcg_gen_shli_tl(tcg_ctx, result, result, 16);
+            tcg_gen_ext32s_tl(tcg_ctx, result, result);
             break;
         case OPC_PRECEQU_PH_QBL:
             check_dsp(ctx);
-            gen_helper_precequ_ph_qbl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_ph_qbl(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_PH_QBR:
             check_dsp(ctx);
-            gen_helper_precequ_ph_qbr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_ph_qbr(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_PH_QBLA:
             check_dsp(ctx);
-            gen_helper_precequ_ph_qbla(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_ph_qbla(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_PH_QBRA:
             check_dsp(ctx);
-            gen_helper_precequ_ph_qbra(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_ph_qbra(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_PH_QBL:
             check_dsp(ctx);
-            gen_helper_preceu_ph_qbl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_ph_qbl(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_PH_QBR:
             check_dsp(ctx);
-            gen_helper_preceu_ph_qbr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_ph_qbr(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_PH_QBLA:
             check_dsp(ctx);
-            gen_helper_preceu_ph_qbla(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_ph_qbla(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_PH_QBRA:
             check_dsp(ctx);
-            gen_helper_preceu_ph_qbra(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_ph_qbra(tcg_ctx, result, v2_t);
             break;
         }
         break;
@@ -22788,75 +22790,75 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_ADDQ_PH:
             check_dsp(ctx);
-            gen_helper_addq_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDQ_S_PH:
             check_dsp(ctx);
-            gen_helper_addq_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_s_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDQ_S_W:
             check_dsp(ctx);
-            gen_helper_addq_s_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_s_w(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_QB:
             check_dsp(ctx);
-            gen_helper_addu_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_qb(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_S_QB:
             check_dsp(ctx);
-            gen_helper_addu_s_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_s_qb(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_PH:
             check_dsp_r2(ctx);
-            gen_helper_addu_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_S_PH:
             check_dsp_r2(ctx);
-            gen_helper_addu_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_s_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_PH:
             check_dsp(ctx);
-            gen_helper_subq_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_S_PH:
             check_dsp(ctx);
-            gen_helper_subq_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_s_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_S_W:
             check_dsp(ctx);
-            gen_helper_subq_s_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_s_w(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_QB:
             check_dsp(ctx);
-            gen_helper_subu_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_qb(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_S_QB:
             check_dsp(ctx);
-            gen_helper_subu_s_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_s_qb(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_PH:
             check_dsp_r2(ctx);
-            gen_helper_subu_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_S_PH:
             check_dsp_r2(ctx);
-            gen_helper_subu_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_s_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDSC:
             check_dsp(ctx);
-            gen_helper_addsc(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addsc(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDWC:
             check_dsp(ctx);
-            gen_helper_addwc(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addwc(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_MODSUB:
             check_dsp(ctx);
-            gen_helper_modsub(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_modsub(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_RADDU_W_QB:
             check_dsp(ctx);
-            gen_helper_raddu_w_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t);
+            gen_helper_raddu_w_qb(tcg_ctx, result, v1_t);
             break;
         }
         break;
@@ -22864,18 +22866,18 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_PRECR_QB_PH:
             check_dsp_r2(ctx);
-            gen_helper_precr_qb_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precr_qb_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECRQ_QB_PH:
             check_dsp(ctx);
-            gen_helper_precrq_qb_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precrq_qb_ph(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECR_SRA_PH_W:
             check_dsp_r2(ctx);
             {
                 TCGv_i32 sa_t = tcg_const_i32(tcg_ctx, v2);
-                gen_helper_precr_sra_ph_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], sa_t, v1_t,
-                                          tcg_ctx->cpu_gpr[ret]);
+                gen_helper_precr_sra_ph_w(tcg_ctx, result, sa_t, v1_t,
+                                          result);
                 tcg_temp_free_i32(tcg_ctx, sa_t);
                 break;
             }
@@ -22883,22 +22885,22 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
             check_dsp_r2(ctx);
             {
                 TCGv_i32 sa_t = tcg_const_i32(tcg_ctx, v2);
-                gen_helper_precr_sra_r_ph_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], sa_t, v1_t,
-                                            tcg_ctx->cpu_gpr[ret]);
+                gen_helper_precr_sra_r_ph_w(tcg_ctx, result, sa_t, v1_t,
+                                            result);
                 tcg_temp_free_i32(tcg_ctx, sa_t);
                 break;
             }
         case OPC_PRECRQ_PH_W:
             check_dsp(ctx);
-            gen_helper_precrq_ph_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precrq_ph_w(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECRQ_RS_PH_W:
             check_dsp(ctx);
-            gen_helper_precrq_rs_ph_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_precrq_rs_ph_w(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_PRECRQU_S_QB_PH:
             check_dsp(ctx);
-            gen_helper_precrqu_s_qb_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_precrqu_s_qb_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         }
         break;
@@ -22907,71 +22909,71 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_PRECEQ_L_PWL:
             check_dsp(ctx);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, 0xFFFFFFFF00000000ull);
+            tcg_gen_andi_tl(tcg_ctx, result, v2_t, 0xFFFFFFFF00000000ull);
             break;
         case OPC_PRECEQ_L_PWR:
             check_dsp(ctx);
-            tcg_gen_shli_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, 32);
+            tcg_gen_shli_tl(tcg_ctx, result, v2_t, 32);
             break;
         case OPC_PRECEQ_PW_QHL:
             check_dsp(ctx);
-            gen_helper_preceq_pw_qhl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceq_pw_qhl(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQ_PW_QHR:
             check_dsp(ctx);
-            gen_helper_preceq_pw_qhr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceq_pw_qhr(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQ_PW_QHLA:
             check_dsp(ctx);
-            gen_helper_preceq_pw_qhla(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceq_pw_qhla(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQ_PW_QHRA:
             check_dsp(ctx);
-            gen_helper_preceq_pw_qhra(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceq_pw_qhra(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_QH_OBL:
             check_dsp(ctx);
-            gen_helper_precequ_qh_obl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_qh_obl(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_QH_OBR:
             check_dsp(ctx);
-            gen_helper_precequ_qh_obr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_qh_obr(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_QH_OBLA:
             check_dsp(ctx);
-            gen_helper_precequ_qh_obla(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_qh_obla(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEQU_QH_OBRA:
             check_dsp(ctx);
-            gen_helper_precequ_qh_obra(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_precequ_qh_obra(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_QH_OBL:
             check_dsp(ctx);
-            gen_helper_preceu_qh_obl(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_qh_obl(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_QH_OBR:
             check_dsp(ctx);
-            gen_helper_preceu_qh_obr(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_qh_obr(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_QH_OBLA:
             check_dsp(ctx);
-            gen_helper_preceu_qh_obla(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_qh_obla(tcg_ctx, result, v2_t);
             break;
         case OPC_PRECEU_QH_OBRA:
             check_dsp(ctx);
-            gen_helper_preceu_qh_obra(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t);
+            gen_helper_preceu_qh_obra(tcg_ctx, result, v2_t);
             break;
         case OPC_ABSQ_S_OB:
             check_dsp_r2(ctx);
-            gen_helper_absq_s_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_ob(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ABSQ_S_PW:
             check_dsp(ctx);
-            gen_helper_absq_s_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_pw(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ABSQ_S_QH:
             check_dsp(ctx);
-            gen_helper_absq_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, tcg_ctx->cpu_env);
+            gen_helper_absq_s_qh(tcg_ctx, result, v2_t, tcg_ctx->cpu_env);
             break;
         }
         break;
@@ -22979,87 +22981,87 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_RADDU_L_OB:
             check_dsp(ctx);
-            gen_helper_raddu_l_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t);
+            gen_helper_raddu_l_ob(tcg_ctx, result, v1_t);
             break;
         case OPC_SUBQ_PW:
             check_dsp(ctx);
-            gen_helper_subq_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_pw(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_S_PW:
             check_dsp(ctx);
-            gen_helper_subq_s_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_s_pw(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_QH:
             check_dsp(ctx);
-            gen_helper_subq_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBQ_S_QH:
             check_dsp(ctx);
-            gen_helper_subq_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subq_s_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_OB:
             check_dsp(ctx);
-            gen_helper_subu_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_ob(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_S_OB:
             check_dsp(ctx);
-            gen_helper_subu_s_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_s_ob(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_QH:
             check_dsp_r2(ctx);
-            gen_helper_subu_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBU_S_QH:
             check_dsp_r2(ctx);
-            gen_helper_subu_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_subu_s_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_SUBUH_OB:
             check_dsp_r2(ctx);
-            gen_helper_subuh_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subuh_ob(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_SUBUH_R_OB:
             check_dsp_r2(ctx);
-            gen_helper_subuh_r_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_subuh_r_ob(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDQ_PW:
             check_dsp(ctx);
-            gen_helper_addq_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_pw(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDQ_S_PW:
             check_dsp(ctx);
-            gen_helper_addq_s_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_s_pw(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDQ_QH:
             check_dsp(ctx);
-            gen_helper_addq_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDQ_S_QH:
             check_dsp(ctx);
-            gen_helper_addq_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addq_s_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_OB:
             check_dsp(ctx);
-            gen_helper_addu_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_ob(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_S_OB:
             check_dsp(ctx);
-            gen_helper_addu_s_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_s_ob(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_QH:
             check_dsp_r2(ctx);
-            gen_helper_addu_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDU_S_QH:
             check_dsp_r2(ctx);
-            gen_helper_addu_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_addu_s_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_ADDUH_OB:
             check_dsp_r2(ctx);
-            gen_helper_adduh_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_adduh_ob(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_ADDUH_R_OB:
             check_dsp_r2(ctx);
-            gen_helper_adduh_r_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_adduh_r_ob(tcg_ctx, result, v1_t, v2_t);
             break;
         }
         break;
@@ -23067,7 +23069,7 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
         switch (op2) {
         case OPC_PRECR_OB_QH:
             check_dsp_r2(ctx);
-            gen_helper_precr_ob_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precr_ob_qh(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECR_SRA_QH_PW:
             check_dsp_r2(ctx);
@@ -23087,23 +23089,23 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
             }
         case OPC_PRECRQ_OB_QH:
             check_dsp(ctx);
-            gen_helper_precrq_ob_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precrq_ob_qh(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECRQ_PW_L:
             check_dsp(ctx);
-            gen_helper_precrq_pw_l(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precrq_pw_l(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECRQ_QH_PW:
             check_dsp(ctx);
-            gen_helper_precrq_qh_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+            gen_helper_precrq_qh_pw(tcg_ctx, result, v1_t, v2_t);
             break;
         case OPC_PRECRQ_RS_QH_PW:
             check_dsp(ctx);
-            gen_helper_precrq_rs_qh_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_precrq_rs_qh_pw(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         case OPC_PRECRQU_S_OB_QH:
             check_dsp(ctx);
-            gen_helper_precrqu_s_ob_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+            gen_helper_precrqu_s_ob_qh(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
             break;
         }
         break;
@@ -23112,6 +23114,9 @@ static void gen_mipsdsp_arith(DisasContext *ctx, uint32_t op1, uint32_t op2,
 
     tcg_temp_free(tcg_ctx, v1_t);
     tcg_temp_free(tcg_ctx, v2_t);
+    if (!ret) {
+        tcg_temp_free(tcg_ctx, result);
+    }
 }
 
 static void gen_mipsdsp_shift(DisasContext *ctx, uint32_t opc,
@@ -23123,9 +23128,11 @@ static void gen_mipsdsp_shift(DisasContext *ctx, uint32_t opc,
     TCGv v1_t;
     TCGv v2_t;
 
-    if (ret == 0) {
-        /* Treat as NOP. */
-        return;
+    /* Discard the GPR result only; helpers still update DSPControl and
+     * feature checks still apply to a zero destination. */
+    TCGv result = ret ? tcg_ctx->cpu_gpr[ret] : tcg_temp_new(tcg_ctx);
+    if (!ret) {
+        tcg_gen_movi_tl(tcg_ctx, result, 0);
     }
 
     t0 = tcg_temp_new(tcg_ctx);
@@ -23143,91 +23150,91 @@ static void gen_mipsdsp_shift(DisasContext *ctx, uint32_t opc,
             switch (op2) {
             case OPC_SHLL_QB:
                 check_dsp(ctx);
-                gen_helper_shll_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_qb(tcg_ctx, result, t0, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLLV_QB:
                 check_dsp(ctx);
-                gen_helper_shll_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_qb(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLL_PH:
                 check_dsp(ctx);
-                gen_helper_shll_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_ph(tcg_ctx, result, t0, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLLV_PH:
                 check_dsp(ctx);
-                gen_helper_shll_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLL_S_PH:
                 check_dsp(ctx);
-                gen_helper_shll_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_s_ph(tcg_ctx, result, t0, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLLV_S_PH:
                 check_dsp(ctx);
-                gen_helper_shll_s_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_s_ph(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLL_S_W:
                 check_dsp(ctx);
-                gen_helper_shll_s_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_s_w(tcg_ctx, result, t0, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHLLV_S_W:
                 check_dsp(ctx);
-                gen_helper_shll_s_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t, tcg_ctx->cpu_env);
+                gen_helper_shll_s_w(tcg_ctx, result, v1_t, v2_t, tcg_ctx->cpu_env);
                 break;
             case OPC_SHRL_QB:
                 check_dsp(ctx);
-                gen_helper_shrl_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shrl_qb(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRLV_QB:
                 check_dsp(ctx);
-                gen_helper_shrl_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shrl_qb(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRL_PH:
                 check_dsp_r2(ctx);
-                gen_helper_shrl_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shrl_ph(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRLV_PH:
                 check_dsp_r2(ctx);
-                gen_helper_shrl_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shrl_ph(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRA_QB:
                 check_dsp_r2(ctx);
-                gen_helper_shra_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shra_qb(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRA_R_QB:
                 check_dsp_r2(ctx);
-                gen_helper_shra_r_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shra_r_qb(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRAV_QB:
                 check_dsp_r2(ctx);
-                gen_helper_shra_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shra_qb(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRAV_R_QB:
                 check_dsp_r2(ctx);
-                gen_helper_shra_r_qb(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shra_r_qb(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRA_PH:
                 check_dsp(ctx);
-                gen_helper_shra_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shra_ph(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRA_R_PH:
                 check_dsp(ctx);
-                gen_helper_shra_r_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shra_r_ph(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRAV_PH:
                 check_dsp(ctx);
-                gen_helper_shra_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shra_ph(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRAV_R_PH:
                 check_dsp(ctx);
-                gen_helper_shra_r_ph(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shra_r_ph(tcg_ctx, result, v1_t, v2_t);
                 break;
             case OPC_SHRA_R_W:
                 check_dsp(ctx);
-                gen_helper_shra_r_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], t0, v2_t);
+                gen_helper_shra_r_w(tcg_ctx, result, t0, v2_t);
                 break;
             case OPC_SHRAV_R_W:
                 check_dsp(ctx);
-                gen_helper_shra_r_w(tcg_ctx, tcg_ctx->cpu_gpr[ret], v1_t, v2_t);
+                gen_helper_shra_r_w(tcg_ctx, result, v1_t, v2_t);
                 break;
             default:            /* Invalid */
                 MIPS_INVAL("MASK SHLL.QB");
@@ -23242,107 +23249,107 @@ static void gen_mipsdsp_shift(DisasContext *ctx, uint32_t opc,
         switch (op2) {
         case OPC_SHLL_PW:
             check_dsp(ctx);
-            gen_helper_shll_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0, tcg_ctx->cpu_env);
+            gen_helper_shll_pw(tcg_ctx, result, v2_t, t0, tcg_ctx->cpu_env);
             break;
         case OPC_SHLLV_PW:
             check_dsp(ctx);
-            gen_helper_shll_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t, tcg_ctx->cpu_env);
+            gen_helper_shll_pw(tcg_ctx, result, v2_t, v1_t, tcg_ctx->cpu_env);
             break;
         case OPC_SHLL_S_PW:
             check_dsp(ctx);
-            gen_helper_shll_s_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0, tcg_ctx->cpu_env);
+            gen_helper_shll_s_pw(tcg_ctx, result, v2_t, t0, tcg_ctx->cpu_env);
             break;
         case OPC_SHLLV_S_PW:
             check_dsp(ctx);
-            gen_helper_shll_s_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t, tcg_ctx->cpu_env);
+            gen_helper_shll_s_pw(tcg_ctx, result, v2_t, v1_t, tcg_ctx->cpu_env);
             break;
         case OPC_SHLL_OB:
             check_dsp(ctx);
-            gen_helper_shll_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0, tcg_ctx->cpu_env);
+            gen_helper_shll_ob(tcg_ctx, result, v2_t, t0, tcg_ctx->cpu_env);
             break;
         case OPC_SHLLV_OB:
             check_dsp(ctx);
-            gen_helper_shll_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t, tcg_ctx->cpu_env);
+            gen_helper_shll_ob(tcg_ctx, result, v2_t, v1_t, tcg_ctx->cpu_env);
             break;
         case OPC_SHLL_QH:
             check_dsp(ctx);
-            gen_helper_shll_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0, tcg_ctx->cpu_env);
+            gen_helper_shll_qh(tcg_ctx, result, v2_t, t0, tcg_ctx->cpu_env);
             break;
         case OPC_SHLLV_QH:
             check_dsp(ctx);
-            gen_helper_shll_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t, tcg_ctx->cpu_env);
+            gen_helper_shll_qh(tcg_ctx, result, v2_t, v1_t, tcg_ctx->cpu_env);
             break;
         case OPC_SHLL_S_QH:
             check_dsp(ctx);
-            gen_helper_shll_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0, tcg_ctx->cpu_env);
+            gen_helper_shll_s_qh(tcg_ctx, result, v2_t, t0, tcg_ctx->cpu_env);
             break;
         case OPC_SHLLV_S_QH:
             check_dsp(ctx);
-            gen_helper_shll_s_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t, tcg_ctx->cpu_env);
+            gen_helper_shll_s_qh(tcg_ctx, result, v2_t, v1_t, tcg_ctx->cpu_env);
             break;
         case OPC_SHRA_OB:
             check_dsp_r2(ctx);
-            gen_helper_shra_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_ob(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_OB:
             check_dsp_r2(ctx);
-            gen_helper_shra_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_ob(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRA_R_OB:
             check_dsp_r2(ctx);
-            gen_helper_shra_r_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_r_ob(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_R_OB:
             check_dsp_r2(ctx);
-            gen_helper_shra_r_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_r_ob(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRA_PW:
             check_dsp(ctx);
-            gen_helper_shra_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_pw(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_PW:
             check_dsp(ctx);
-            gen_helper_shra_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_pw(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRA_R_PW:
             check_dsp(ctx);
-            gen_helper_shra_r_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_r_pw(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_R_PW:
             check_dsp(ctx);
-            gen_helper_shra_r_pw(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_r_pw(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRA_QH:
             check_dsp(ctx);
-            gen_helper_shra_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_qh(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_QH:
             check_dsp(ctx);
-            gen_helper_shra_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_qh(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRA_R_QH:
             check_dsp(ctx);
-            gen_helper_shra_r_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shra_r_qh(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRAV_R_QH:
             check_dsp(ctx);
-            gen_helper_shra_r_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shra_r_qh(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRL_OB:
             check_dsp(ctx);
-            gen_helper_shrl_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shrl_ob(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRLV_OB:
             check_dsp(ctx);
-            gen_helper_shrl_ob(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shrl_ob(tcg_ctx, result, v2_t, v1_t);
             break;
         case OPC_SHRL_QH:
             check_dsp_r2(ctx);
-            gen_helper_shrl_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, t0);
+            gen_helper_shrl_qh(tcg_ctx, result, v2_t, t0);
             break;
         case OPC_SHRLV_QH:
             check_dsp_r2(ctx);
-            gen_helper_shrl_qh(tcg_ctx, tcg_ctx->cpu_gpr[ret], v2_t, v1_t);
+            gen_helper_shrl_qh(tcg_ctx, result, v2_t, v1_t);
             break;
         default:            /* Invalid */
             MIPS_INVAL("MASK SHLL.OB");
@@ -23356,6 +23363,9 @@ static void gen_mipsdsp_shift(DisasContext *ctx, uint32_t opc,
     tcg_temp_free(tcg_ctx, t0);
     tcg_temp_free(tcg_ctx, v1_t);
     tcg_temp_free(tcg_ctx, v2_t);
+    if (!ret) {
+        tcg_temp_free(tcg_ctx, result);
+    }
 }
 
 static void gen_mipsdsp_multiply(DisasContext *ctx, uint32_t op1, uint32_t op2,

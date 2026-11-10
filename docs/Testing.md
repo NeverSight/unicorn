@@ -11,3 +11,7 @@ Unicorn focus on the testing to reduce bugs and ensure the expected behaviors. T
 ## Contribution Guide
 
 Generally, it is ideal to add new tests whenever a PR is made. `unit/` should be the first place for the new tests to go.
+`test_mips_dsp_zero` checks MIPS32 packed DSP arithmetic, saturated absolute
+values and left shifts with discarded or aliased GPR results in both byte orders.
+Status.MX is enabled before comparing manual-derived DSPControl effects.
+Separate disabled-DSP cases must still fault when the destination is `$zero`.
