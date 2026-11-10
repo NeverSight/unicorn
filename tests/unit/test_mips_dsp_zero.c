@@ -67,7 +67,7 @@ static void test_mips_dsp_zero_effects(void)
 static void test_mips_dsp_zero_still_requires_enabled_dsp(void)
 {
     for (unsigned little = 0; little != 2; ++little) {
-        const uint32_t instructions[] = {0x7c850010, 0x7ce40013, 0x7c850190, 0x7c8501d0, 0x7c8507d0};
+        const uint32_t instructions[] = {0x7c850010, 0x7ce40013, 0x7c850190, 0x7c8501d0, 0x7c8507d0, 0x7c850710, 0x7c850750, 0x7c850551, 0x7c8503d1};
         for (unsigned i = 0; i != sizeof(instructions)/sizeof(instructions[0]); ++i) {
             uc_engine *uc;
             OK(uc_open(UC_ARCH_MIPS,
