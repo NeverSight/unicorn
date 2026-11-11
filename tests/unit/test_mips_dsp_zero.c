@@ -86,7 +86,55 @@ static void test_mips_dsp_zero_still_requires_enabled_dsp(void)
         }
     }
 }
-TEST_LIST = {{"test_mips_dsp_zero_effects", test_mips_dsp_zero_effects},
-             {"test_mips_dsp_zero_still_requires_enabled_dsp",
-              test_mips_dsp_zero_still_requires_enabled_dsp},
-             {NULL, NULL}};
+static void test_mips_dsp_discarded_extraction(void)
+{
+    static const uint32_t encodings[] = {
+        0x7c001038, 0x7c001138, 0x7c0011b8, 0x7c0013b8, // EXTR.*
+        0x7c801078, 0x7c801178, 0x7c8011f8, 0x7c8013f8, // EXTRV.*
+        0x7ce010b8, 0x7c8010f8, 0x7ce012b8, 0x7c8012f8, // EXTP[V], EXTPDP[V]
+    };
+    for (unsigned little = 0; little < 2; ++little) {
+        for (unsigned i = 0; i < sizeof(encodings) / sizeof(encodings[0]);
+             ++i) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS,
+                       UC_MODE_MIPS32 | (little ? UC_MODE_LITTLE_ENDIAN
+                                                : UC_MODE_BIG_ENDIAN),
+                       &uc));
+            OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS32_74KF));
+            OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
+            const uint32_t program[] = {
+                0x40086000, 0x3c090100, 0x01094025, 0x40886000,   0xc0,
+                0x00a01011, 0x00001013, 0x7cc1fcf8, encodings[i], 0x7c3f44b8};
+            uint8_t code[sizeof(program)];
+            for (unsigned j = 0; j < sizeof(program) / sizeof(program[0]); ++j)
+                for (unsigned k = 0; k < 4; ++k)
+                    code[4 * j + k] = program[j] >> (8 * (little ? k : 3 - k));
+            OK(uc_mem_write(uc, 0x10000, code, sizeof(code)));
+            uc_assert_err(UC_ERR_EXCEPTION,
+                          uc_emu_start(uc, 0x10020, 0x10024, 0, 1));
+            for (unsigned success = 0; success < 2; ++success) {
+                uint32_t count = i < 8 ? 0 : 7, hi = 1,
+                         state = success ? 0x400f : 0, got = 0;
+                OK(uc_reg_write(uc, UC_MIPS_REG_A0, &count));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A1, &hi));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A2, &state));
+                OK(uc_emu_start(uc, 0x10000, 0x10000 + sizeof(code), 0, 0));
+                OK(uc_reg_read(uc, UC_MIPS_REG_T0, &got));
+                uint32_t expected = i < 8      ? state | (1u << 23)
+                                    : !success ? 0x4000
+                                    : i < 10   ? 15
+                                               : 7;
+                TEST_CHECK(got == expected);
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
+TEST_LIST = {
+    {"test_mips_dsp_discarded_extraction", test_mips_dsp_discarded_extraction},
+    {"test_mips_dsp_zero_effects", test_mips_dsp_zero_effects},
+    {"test_mips_dsp_zero_still_requires_enabled_dsp",
+     test_mips_dsp_zero_still_requires_enabled_dsp},
+    {NULL, NULL}};
