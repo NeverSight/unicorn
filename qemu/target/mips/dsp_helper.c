@@ -248,16 +248,20 @@ static inline uint16_t mipsdsp_sat_add_u16(uint16_t a, uint16_t b,
 static inline int32_t mipsdsp_sat32_acc_q31(int32_t acc, int32_t a,
                                             CPUMIPSState *env)
 {
-    int64_t temp;
+#ifndef TARGET_MIPS64
+    /* MAQ_SA.W.PHL/PHR saturate the wrapped 64-bit sum to Q31. */
+    uint64_t acc_bits = ((uint64_t)env->active_tc.HI[acc] << 32) |
+                        (uint32_t)env->active_tc.LO[acc];
+    uint64_t sum = acc_bits + (uint64_t)(int64_t)a;
+    if (sum <= INT32_MAX || sum >= UINT64_C(0xffffffff80000000)) {
+        return (int32_t)sum;
+    }
+    set_DSPControl_overflow_flag(1, 16 + acc, env);
+    return sum >> 63 ? INT32_MIN : INT32_MAX;
+#else
+    int64_t temp = (uint64_t)env->active_tc.LO[acc];
     int32_t temp32, temp31, result;
     int64_t temp_sum;
-
-#ifndef TARGET_MIPS64
-    temp = ((uint64_t)env->active_tc.HI[acc] << 32) |
-           (uint64_t)env->active_tc.LO[acc];
-#else
-    temp = (uint64_t)env->active_tc.LO[acc];
-#endif
 
     temp_sum = (int64_t)a + temp;
 
@@ -275,6 +279,7 @@ static inline int32_t mipsdsp_sat32_acc_q31(int32_t acc, int32_t a,
     }
 
     return result;
+#endif
 }
 
 #ifdef TARGET_MIPS64
