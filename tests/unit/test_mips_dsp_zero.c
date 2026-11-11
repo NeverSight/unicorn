@@ -132,7 +132,58 @@ static void test_mips_dsp_discarded_extraction(void)
     }
 }
 
+static void test_mips_dspr2_compare_control(void)
+{
+    const uint32_t encodings[] = {0x7c850611, 0x7c850651, 0x7c850691};
+    const uint32_t predicates[] = {8, 1, 9};
+    const unsigned destinations[] = {0, 2, 4};
+    for (unsigned little = 0; little < 2; ++little) {
+        for (unsigned i = 0; i < 3; ++i) {
+            for (unsigned d = 0; d < 3; ++d) {
+                unsigned rd = destinations[d];
+                uc_engine *uc;
+                OK(uc_open(UC_ARCH_MIPS,
+                           UC_MODE_MIPS32 | (little ? UC_MODE_LITTLE_ENDIAN
+                                                    : UC_MODE_BIG_ENDIAN),
+                           &uc));
+                OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS32_74KF));
+                OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
+                const uint32_t program[] = {0x40086000,
+                                            0x3c090100,
+                                            0x01094025,
+                                            0x40886000,
+                                            0xc0,
+                                            0x7cc1fcf8,
+                                            encodings[i] | (rd << 11),
+                                            0x7c3f44b8};
+                uint8_t code[sizeof(program)];
+                for (unsigned j = 0; j < sizeof(program) / sizeof(program[0]);
+                     ++j)
+                    for (unsigned b = 0; b < 4; ++b)
+                        code[4 * j + b] =
+                            program[j] >> (8 * (little ? b : 3 - b));
+                OK(uc_mem_write(uc, 0x10000, code, sizeof(code)));
+                uc_assert_err(UC_ERR_EXCEPTION,
+                              uc_emu_start(uc, 0x10018, 0x1001c, 0, 1));
+                uint32_t a = 0x00ff8001, b = 0x00017f02, state = 0x05204005;
+                OK(uc_reg_write(uc, UC_MIPS_REG_A0, &a));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A1, &b));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A2, &state));
+                OK(uc_emu_start(uc, 0x10000, 0x10000 + sizeof(code), 0, 0));
+                uint32_t result = 0;
+                OK(uc_reg_read(uc, UC_MIPS_REG_T0, &result));
+                TEST_CHECK(result ==
+                           ((state & 0xf0ffffff) | (predicates[i] << 24)));
+                OK(uc_reg_read(uc, UC_MIPS_REG_0 + rd, &result));
+                TEST_CHECK(result == (rd ? predicates[i] : 0));
+                OK(uc_close(uc));
+            }
+        }
+    }
+}
+
 TEST_LIST = {
+    {"test_mips_dspr2_compare_control", test_mips_dspr2_compare_control},
     {"test_mips_dsp_discarded_extraction", test_mips_dsp_discarded_extraction},
     {"test_mips_dsp_zero_effects", test_mips_dsp_zero_effects},
     {"test_mips_dsp_zero_still_requires_enabled_dsp",

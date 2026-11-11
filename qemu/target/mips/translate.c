@@ -23874,26 +23874,23 @@ static void gen_mipsdsp_add_cmp_pick(DisasContext *ctx,
         case OPC_CMPGDU_EQ_QB:
             check_dsp_r2(ctx);
             gen_helper_cmpgu_eq_qb(tcg_ctx, t1, v1_t, v2_t);
-            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], t1);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, 0xF0FFFFFF);
-            tcg_gen_shli_tl(tcg_ctx, t1, t1, 24);
-            tcg_gen_or_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, t1);
+            tcg_gen_deposit_tl(tcg_ctx, tcg_ctx->cpu_dspctrl,
+                               tcg_ctx->cpu_dspctrl, t1, 24, 4);
+            gen_store_gpr(tcg_ctx, t1, ret);
             break;
         case OPC_CMPGDU_LT_QB:
             check_dsp_r2(ctx);
             gen_helper_cmpgu_lt_qb(tcg_ctx, t1, v1_t, v2_t);
-            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], t1);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, 0xF0FFFFFF);
-            tcg_gen_shli_tl(tcg_ctx, t1, t1, 24);
-            tcg_gen_or_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, t1);
+            tcg_gen_deposit_tl(tcg_ctx, tcg_ctx->cpu_dspctrl,
+                               tcg_ctx->cpu_dspctrl, t1, 24, 4);
+            gen_store_gpr(tcg_ctx, t1, ret);
             break;
         case OPC_CMPGDU_LE_QB:
             check_dsp_r2(ctx);
             gen_helper_cmpgu_le_qb(tcg_ctx, t1, v1_t, v2_t);
-            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[ret], t1);
-            tcg_gen_andi_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, 0xF0FFFFFF);
-            tcg_gen_shli_tl(tcg_ctx, t1, t1, 24);
-            tcg_gen_or_tl(tcg_ctx, tcg_ctx->cpu_dspctrl, tcg_ctx->cpu_dspctrl, t1);
+            tcg_gen_deposit_tl(tcg_ctx, tcg_ctx->cpu_dspctrl,
+                               tcg_ctx->cpu_dspctrl, t1, 24, 4);
+            gen_store_gpr(tcg_ctx, t1, ret);
             break;
         case OPC_CMP_EQ_PH:
             check_dsp(ctx);
@@ -27546,12 +27543,15 @@ static void decode_opc_special3_legacy(CPUMIPSState *env, DisasContext *ctx)
         case OPC_CMP_LE_PH:
             gen_mipsdsp_add_cmp_pick(ctx, op1, op2, rd, rs, rt, 0);
             break;
-        case OPC_CMPGU_EQ_QB:
-        case OPC_CMPGU_LT_QB:
-        case OPC_CMPGU_LE_QB:
         case OPC_CMPGDU_EQ_QB:
         case OPC_CMPGDU_LT_QB:
         case OPC_CMPGDU_LE_QB:
+            /* CCOND is written even when the integer destination is zero. */
+            gen_mipsdsp_add_cmp_pick(ctx, op1, op2, rd, rs, rt, 0);
+            break;
+        case OPC_CMPGU_EQ_QB:
+        case OPC_CMPGU_LT_QB:
+        case OPC_CMPGU_LE_QB:
         case OPC_PICK_QB:
         case OPC_PICK_PH:
         case OPC_PACKRL_PH:
