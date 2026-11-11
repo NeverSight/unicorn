@@ -222,7 +222,64 @@ static void test_mips_simple_coredump_2137(void)
     OK(uc_close(uc));
 }
 
+static void test_mips_dsp_maq_full_accumulator(void)
+{
+    static const struct {
+        uint32_t hi, lo, a, b, result_hi, result_lo, flag;
+    } cases[] = {
+        {0x80000000, 0x80000000, 0x80008000, 0x80008000, UINT32_MAX, 0x80000000,
+         1},
+        {0x40000000, 0x00000000, 0, 0, 0, 0x7fffffff, 1},
+        {0xc0000000, 0x00000000, 0, 0, UINT32_MAX, 0x80000000, 1},
+        {0, 0x7fffffff, 0, 0, 0, 0x7fffffff, 0},
+        {UINT32_MAX, 0x80000000, 0, 0, UINT32_MAX, 0x80000000, 0},
+        {UINT32_MAX, 0xffffffff, 0x00010001, 0x00010001, 0, 1, 0},
+        {0x7fffffff, 0xffffffff, 0x00010001, 0x00010001, UINT32_MAX, 0x80000000,
+         1},
+    };
+    for (unsigned big = 0; big < 2; ++big) {
+        for (unsigned right = 0; right < 2; ++right) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS,
+                       UC_MODE_MIPS32 |
+                           (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN),
+                       &uc));
+            OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS32_74KF));
+            OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+            // Enable DSP, clear DSPControl, write AC2, execute MAQ_SA and read
+            // AC2/OUTFLAG.
+            const uint32_t ops[] = {
+                0x40086000, 0x3c090100, 0x01094025,
+                0x40886000, 0xc0,       0x7c01fcf8,
+                0x00801011, 0x00a01013, 0x7cc71430 | (right << 7),
+                0x00401010, 0x00401812, 0x7c3f44b8};
+            uint8_t code[sizeof(ops)];
+            for (unsigned j = 0; j < sizeof(ops) / sizeof(ops[0]); ++j)
+                for (unsigned k = 0; k < 4; ++k)
+                    code[4 * j + k] = ops[j] >> (8 * (big ? 3 - k : k));
+            OK(uc_mem_write(uc, code_start, code, sizeof(code)));
+            for (unsigned k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k) {
+                uint32_t hi = 0, lo = 0, flags = 0;
+                OK(uc_reg_write(uc, UC_MIPS_REG_A0, &cases[k].hi));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A1, &cases[k].lo));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A2, &cases[k].a));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A3, &cases[k].b));
+                OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0,
+                                0));
+                OK(uc_reg_read(uc, UC_MIPS_REG_V0, &hi));
+                OK(uc_reg_read(uc, UC_MIPS_REG_V1, &lo));
+                OK(uc_reg_read(uc, UC_MIPS_REG_T0, &flags));
+                TEST_CHECK(hi == cases[k].result_hi);
+                TEST_CHECK(lo == cases[k].result_lo);
+                TEST_CHECK(flags == (cases[k].flag << 18));
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
 TEST_LIST = {
+    {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},
     {"test_mips_stop_at_delay_slot", test_mips_stop_at_delay_slot},
     {"test_mips_el_ori", test_mips_el_ori},
