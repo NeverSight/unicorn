@@ -278,7 +278,62 @@ static void test_mips_dsp_maq_full_accumulator(void)
     }
 }
 
+static void test_micromips64r6_generic(void)
+{
+    // Physical halfword order is independent of host and target byte order.
+    // These execute directly in the microMIPS translator, without conversion
+    // into classic opcodes by the caller.
+    const uint32_t words[] = {0x54c41130, 0xbc440000, 0xb8440008, 0x41020003};
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        uint64_t status = 0;
+        OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        status |= 0x24000000; // CU1 and FR
+        OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        uint8_t code[sizeof(words)];
+        for (unsigned j = 0; j < sizeof(words) / sizeof(words[0]); ++j)
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = words[j] >> (k < 2 ? 16 : 0);
+                code[j * 4 + k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+        OK(uc_mem_write(uc, code_start, code, sizeof(code)));
+        uint64_t a = 0x3ff4000000000000ull, b = 0xbff8000000000000ull;
+        uint64_t actual = 0;
+        uint32_t csr = 0xc0000;
+        OK(uc_reg_write(uc, UC_MIPS_REG_F4, &a));
+        OK(uc_reg_write(uc, UC_MIPS_REG_F6, &b));
+        OK(uc_reg_write(uc, UC_MIPS_REG_FCSR, &csr));
+        OK(uc_emu_start(uc, code_start | 1, code_start + 4, 0, 1));
+        OK(uc_reg_read(uc, UC_MIPS_REG_F2, &actual));
+        TEST_CHECK(actual == 0xbfd0000000000000ull); // 1.25 - 1.5
+        OK(uc_reg_read(uc, UC_MIPS_REG_FCSR, &csr));
+        TEST_CHECK(csr == 0xc0000);
+
+        uint64_t address = code_start + 256;
+        const uint8_t data[] = {0x81, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+        uint8_t copied[8] = {0};
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &address));
+        OK(uc_mem_write(uc, address, data, sizeof(data)));
+        OK(uc_emu_start(uc, (code_start + 4) | 1, code_start + 12, 0, 2));
+        OK(uc_mem_read(uc, address + 8, copied, sizeof(copied)));
+        TEST_CHECK(memcmp(copied, data, sizeof(data)) == 0);
+        for (unsigned odd = 0; odd < 2; ++odd) {
+            uint64_t fp = odd, pc = 0;
+            OK(uc_reg_write(uc, UC_MIPS_REG_F2, &fp));
+            OK(uc_emu_start(uc, (code_start + 12) | 1, code_start + 64, 0, 1));
+            OK(uc_reg_read(uc, UC_MIPS_REG_PC, &pc));
+            TEST_CHECK((pc & ~1ull) == code_start + (odd ? 16 : 22));
+        }
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
+    {"test_micromips64r6_generic", test_micromips64r6_generic},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},
     {"test_mips_stop_at_delay_slot", test_mips_stop_at_delay_slot},
