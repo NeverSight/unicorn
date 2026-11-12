@@ -332,7 +332,75 @@ static void test_micromips64r6_generic(void)
     }
 }
 
+static void test_micromips64r6_doublewords(void)
+{
+    const struct {
+        uint32_t word;
+        uint64_t a, b, expected;
+        int result;
+    } cases[] = {
+        {0x58a41018, 0x100000001ull, 3, 0x300000003ull, UC_MIPS_REG_V0},
+        {0x58a41058, (uint64_t)-3, 3, UINT64_MAX, UC_MIPS_REG_V0},
+        {0x58a410d8, UINT64_MAX, 2, 1, UC_MIPS_REG_V0},
+        {0x58a41118, (uint64_t)-55, 3, (uint64_t)-18, UC_MIPS_REG_V0},
+        {0x58a41158, (uint64_t)-55, 3, UINT64_MAX, UC_MIPS_REG_V0},
+        {0x58445b3c, 0x100000001ull, 3, 31, UC_MIPS_REG_V0},
+        {0x58447b3c, 0x0123456789abcdefull, 3, 0x23016745ab89efcdull, UC_MIPS_REG_V0},
+        {0x5844fb3c, 0x0123456789abcdefull, 3, 0xcdef89ab45670123ull, UC_MIPS_REG_V0},
+        {0x4224fffc, 0x123456789abcdef0ull, 3, 0x123456749abcdef0ull, UC_MIPS_REG_A0},
+        {0x4204fffc, 0x123456789abcdef0ull, 3, 0x123056789abcdef0ull, UC_MIPS_REG_A0},
+        {0x5c44fff8, 0x100000001ull, 3, 0xfffffff9ull, UC_MIPS_REG_V0},
+    };
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            uint8_t code[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = cases[i].word >> (k < 2 ? 16 : 0);
+                code[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            OK(uc_mem_write(uc, code_start + 4 * i, code, 4));
+        }
+        for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            uint64_t actual = 0, pc = 0;
+            OK(uc_reg_write(uc, UC_MIPS_REG_A0, &cases[i].a));
+            OK(uc_reg_write(uc, UC_MIPS_REG_A1, &cases[i].b));
+            OK(uc_emu_start(uc, (code_start + 4 * i) | 1,
+                            code_start + 4096, 0, 1));
+            OK(uc_reg_read(uc, cases[i].result, &actual));
+            TEST_CHECK(actual == cases[i].expected);
+            OK(uc_reg_read(uc, UC_MIPS_REG_PC, &pc));
+            TEST_CHECK(pc == code_start + 4 * (i + 1));
+        }
+        // LD/SD consume raw target-order memory, with no host integer cast.
+        const uint32_t memory_words[] = {0xdc440010, 0xd8440018, 0x5800003f};
+        uint8_t code[sizeof(memory_words)];
+        for (unsigned j = 0; j < 3; ++j)
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = memory_words[j] >> (k < 2 ? 16 : 0);
+                code[j * 4 + k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+        const uint8_t data[] = {0x81, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+        uint8_t actual[8] = {0};
+        uint64_t address = code_start + 512;
+        OK(uc_mem_write(uc, code_start + 128, code, sizeof(code)));
+        OK(uc_mem_write(uc, address + 16, data, sizeof(data)));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &address));
+        OK(uc_emu_start(uc, (code_start + 128) | 1, code_start + 136, 0, 2));
+        OK(uc_mem_read(uc, address + 24, actual, sizeof(actual)));
+        TEST_CHECK(memcmp(data, actual, sizeof(data)) == 0);
+        TEST_CHECK(uc_emu_start(uc, (code_start + 136) | 1,
+                               code_start + 140, 0, 1) == UC_ERR_EXCEPTION);
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
+    {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},

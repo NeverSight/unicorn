@@ -16263,6 +16263,113 @@ static void gen_pool32fxf(DisasContext *ctx, int rt, int rs)
     }
 }
 
+#if defined(TARGET_MIPS64)
+/* microMIPS64 Volume II-B, revision 6.05. Decode physical fields here;
+ * use the existing TCG operations, without rewriting to classic opcodes. */
+static bool decode_micromips64_r6(DisasContext *ctx)
+{
+    TCGContext *tcg_ctx = ctx->uc->tcg_ctx;
+    uint32_t word = ctx->opcode;
+    unsigned major = word >> 26;
+    int rt = extract32(word, 21, 5), rs = extract32(word, 16, 5);
+    int rd = extract32(word, 11, 5);
+    int16_t imm = word;
+    if (!(ctx->insn_flags & ISA_MIPS32R6) ||
+        !(major == POOL32S || major == DADDIU32 || major == SD32 ||
+          major == LD32 || major == JALX32 ||
+          (major == POOL32I && (rt == 16 || rt == 17)))) {
+        return false;
+    }
+    check_mips_64(ctx);
+    switch (major) {
+    case DADDIU32:
+        gen_arith_imm(ctx, OPC_DADDIU, rt, rs, imm);
+        return true;
+    case LD32:
+        gen_ld(ctx, OPC_LD, rt, rs, imm);
+        return true;
+    case SD32:
+        gen_st(ctx, OPC_SD, rt, rs, imm);
+        return true;
+    case POOL32I: /* DATI / DAHI */
+        if (rs) {
+            uint64_t addend = (uint64_t)(int64_t)imm << (rt == 16 ? 48 : 32);
+            tcg_gen_addi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rs],
+                           tcg_ctx->cpu_gpr[rs], addend);
+        }
+        return true;
+    case JALX32: /* DAUI in Release 6 */
+        if (!rs) {
+            generate_exception_end(ctx, EXCP_RI);
+        } else if (rt) {
+            tcg_gen_addi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rt],
+                           tcg_ctx->cpu_gpr[rs], (int64_t)imm * 65536);
+        }
+        return true;
+    case POOL32S:
+        switch (word & 0x7ff) {
+        case 0x018:
+            gen_r6_muldiv(ctx, R6_OPC_DMUL, rd, rs, rt);
+            return true;
+        case 0x058:
+            gen_r6_muldiv(ctx, R6_OPC_DMUH, rd, rs, rt);
+            return true;
+        case 0x098:
+            gen_r6_muldiv(ctx, R6_OPC_DMULU, rd, rs, rt);
+            return true;
+        case 0x0d8:
+            gen_r6_muldiv(ctx, R6_OPC_DMUHU, rd, rs, rt);
+            return true;
+        case 0x118:
+            gen_r6_muldiv(ctx, R6_OPC_DDIV, rd, rs, rt);
+            return true;
+        case 0x158:
+            gen_r6_muldiv(ctx, R6_OPC_DMOD, rd, rs, rt);
+            return true;
+        case 0x198:
+            gen_r6_muldiv(ctx, R6_OPC_DDIVU, rd, rs, rt);
+            return true;
+        case 0x1d8:
+            gen_r6_muldiv(ctx, R6_OPC_DMODU, rd, rs, rt);
+            return true;
+        case 0x150:
+            gen_arith(ctx, OPC_DADDU, rd, rs, rt);
+            return true;
+        case 0x1d0:
+            gen_arith(ctx, OPC_DSUBU, rd, rs, rt);
+            return true;
+        case 0x008:
+            gen_shift_imm(ctx, OPC_DSLL32, rt, rs, rd);
+            return true;
+        }
+        if ((word & 0xff) == 0x1c) {
+            gen_align(ctx, 64, rd, rs, rt, extract32(word, 8, 3));
+            return true;
+        }
+        switch (word & 0xffff) {
+        case 0x5b3c:
+            gen_cl(ctx, OPC_DCLZ, rt, rs);
+            return true;
+        case 0x4b3c:
+            gen_cl(ctx, OPC_DCLO, rt, rs);
+            return true;
+        case 0x0b3c:
+            gen_bitswap(ctx, OPC_DBITSWAP, rs, rt);
+            return true;
+        case 0x7b3c:
+            gen_bshfl(ctx, OPC_DSBH, rs, rt);
+            return true;
+        case 0xfb3c:
+            gen_bshfl(ctx, OPC_DSHD, rs, rt);
+            return true;
+        }
+        generate_exception_end(ctx, EXCP_RI);
+        return true;
+    }
+    g_assert_not_reached();
+}
+#endif
+
 static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
 {
     int32_t offset;
@@ -16274,6 +16381,12 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
 
     insn = cpu_lduw_code(env, ctx->base.pc_next + 2);
     ctx->opcode = (ctx->opcode << 16) | insn;
+
+#if defined(TARGET_MIPS64)
+    if (decode_micromips64_r6(ctx)) {
+        return;
+    }
+#endif
 
     rt = (ctx->opcode >> 21) & 0x1f;
     rs = (ctx->opcode >> 16) & 0x1f;
