@@ -57,6 +57,8 @@ typedef enum uc_cpu_mips64 {
     UC_CPU_MIPS64_LOONGSON_2F,
     UC_CPU_MIPS64_MIPS64DSPR2,
 
+    UC_CPU_MIPS64_MICROMIPS64R6_GENERIC,
+
     UC_CPU_MIPS64_ENDING
 } uc_cpu_mips64;
 
