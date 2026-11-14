@@ -11299,7 +11299,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             if (ctx->abs2008) {
                 tcg_gen_andi_i32(tcg_ctx, fp0, fp0, 0x7fffffffUL);
             } else {
-                gen_helper_float_abs_s(tcg_ctx, fp0, fp0);
+                gen_helper_float_abs_s(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
             }
             gen_store_fpr32(ctx, fp0, fd);
             tcg_temp_free_i32(tcg_ctx, fp0);
@@ -11322,7 +11322,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             if (ctx->abs2008) {
                 tcg_gen_xori_i32(tcg_ctx, fp0, fp0, 1UL << 31);
             } else {
-                gen_helper_float_chs_s(tcg_ctx, fp0, fp0);
+                gen_helper_float_chs_s(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
             }
             gen_store_fpr32(ctx, fp0, fd);
             tcg_temp_free_i32(tcg_ctx, fp0);
@@ -11837,7 +11837,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             if (ctx->abs2008) {
                 tcg_gen_andi_i64(tcg_ctx, fp0, fp0, 0x7fffffffffffffffULL);
             } else {
-                gen_helper_float_abs_d(tcg_ctx, fp0, fp0);
+                gen_helper_float_abs_d(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
             }
             gen_store_fpr64(ctx, fp0, fd);
             tcg_temp_free_i64(tcg_ctx, fp0);
@@ -11862,7 +11862,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             if (ctx->abs2008) {
                 tcg_gen_xori_i64(tcg_ctx, fp0, fp0, 1ULL << 63);
             } else {
-                gen_helper_float_chs_d(tcg_ctx, fp0, fp0);
+                gen_helper_float_chs_d(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
             }
             gen_store_fpr64(ctx, fp0, fd);
             tcg_temp_free_i64(tcg_ctx, fp0);
