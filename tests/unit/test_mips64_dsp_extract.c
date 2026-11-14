@@ -137,8 +137,61 @@ static void test_mips_dsp_discarded_transfer_requires_enabled_dsp(void)
     }
 }
 
+static void test_mips64_dsp_discarded_extraction(void)
+{
+    const uint32_t instructions[] = {
+        0x7ce000bc, 0x7c8000fc, 0x7ce002bc, 0x7c8002fc,
+        0x7ce0003c, 0x7c80007c, 0x7ce0043c, 0x7c80047c};
+    for (unsigned little = 0; little < 2; ++little) {
+        for (unsigned bank = 0; bank < 4; ++bank) {
+            for (unsigned op = 0; op < 8; ++op) {
+                uc_engine *uc;
+                OK(uc_open(UC_ARCH_MIPS,
+                           UC_MODE_MIPS64 | (little ? UC_MODE_LITTLE_ENDIAN
+                                                    : UC_MODE_BIG_ENDIAN), &uc));
+                OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MIPS64DSPR2));
+                OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
+                uint32_t instruction = instructions[op] | (bank << 11);
+                put_code(uc, 0x10040, &instruction, 1, little);
+                uc_assert_err(UC_ERR_EXCEPTION,
+                              uc_emu_start(uc, 0x10040, 0x10044, 0, 1));
+                const uint32_t enable[] = {0x40086000, 0x3c090100, 0x01094025,
+                                           0x40886000, 0xc0};
+                put_code(uc, 0x10000, enable, 5, little);
+                OK(uc_emu_start(uc, 0x10000, 0x10014, 0, 5));
+                const uint32_t program[] = {
+                    0x00a00011 | (bank << 11), 0x00c00013 | (bank << 11),
+                    0x7ce1fcf8, instruction, 0x7c3f44b8, 0x00001025};
+                put_code(uc, 0x10080, program, 6, little);
+                for (unsigned success = 0; success < 2; ++success) {
+                    uint64_t count = 7, hi = UINT64_C(0x123456789abcdef0),
+                             lo = UINT64_C(0xfedcba9876543210),
+                             state = success ? 0x400f : 0, got, zero;
+                    OK(uc_reg_write(uc, UC_MIPS_REG_4, &count));
+                    OK(uc_reg_write(uc, UC_MIPS_REG_5, &hi));
+                    OK(uc_reg_write(uc, UC_MIPS_REG_6, &lo));
+                    OK(uc_reg_write(uc, UC_MIPS_REG_7, &state));
+                    OK(uc_emu_start(uc, 0x10080, 0x10098, 0, 6));
+                    if (op < 4)
+                        state = !success ? 0x4000 : op < 2 ? 15 : 7;
+                    OK(uc_reg_read(uc, UC_MIPS_REG_8, &got));
+                    TEST_CHECK(got == state);
+                    OK(uc_reg_read(uc, UC_MIPS_REG_0, &zero));
+                    TEST_CHECK(zero == 0);
+                    OK(uc_reg_read(uc, UC_MIPS_REG_2, &zero));
+                    TEST_CHECK(zero == 0);
+                    TEST_MSG("op=%u bank=%u little=%u success=%u", op, bank,
+                             little, success);
+                }
+                OK(uc_close(uc));
+            }
+        }
+    }
+}
+
 TEST_LIST = {
     {"test_mips64_dsp_extract_boundaries", test_mips64_dsp_extract_boundaries},
     {"test_mips_dsp_discarded_transfer_requires_enabled_dsp",
      test_mips_dsp_discarded_transfer_requires_enabled_dsp},
+    {"test_mips64_dsp_discarded_extraction", test_mips64_dsp_discarded_extraction},
     {NULL, NULL}};
