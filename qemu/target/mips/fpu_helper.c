@@ -976,27 +976,48 @@ uint32_t helper_float_floor_2008_w_s(CPUMIPSState *env, uint32_t fst0)
     return wt2;
 }
 
-/* unary operations, not modifying fp status  */
-#define FLOAT_UNOP(name)                                       \
-uint64_t helper_float_ ## name ## _d(uint64_t fdt0)                \
-{                                                              \
-    return float64_ ## name(fdt0);                             \
-}                                                              \
-uint32_t helper_float_ ## name ## _s(uint32_t fst0)                \
-{                                                              \
-    return float32_ ## name(fst0);                             \
-}                                                              \
-uint64_t helper_float_ ## name ## _ps(uint64_t fdt0)               \
-{                                                              \
-    uint32_t wt0;                                              \
-    uint32_t wth0;                                             \
-                                                               \
-    wt0 = float32_ ## name(fdt0 & 0XFFFFFFFF);                 \
-    wth0 = float32_ ## name(fdt0 >> 32);                       \
-    return ((uint64_t)wth0 << 32) | wt0;                       \
+/* Before ABS2008, ABS/NEG are arithmetic operations: either kind of NaN
+ * raises Invalid. Update Cause even on a finite input; on an enabled trap
+ * update_fcr31 exits before the translator writes the destination. */
+static uint32_t legacy_sign_s(CPUMIPSState *env, uint32_t value, bool negate)
+{
+    if (float32_is_any_nan(value)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        return float32_default_nan(&env->active_fpu.fp_status);
+    }
+    return negate ? float32_chs(value) : float32_abs(value);
 }
-FLOAT_UNOP(abs)
-FLOAT_UNOP(chs)
+
+static uint64_t legacy_sign_d(CPUMIPSState *env, uint64_t value, bool negate)
+{
+    if (float64_is_any_nan(value)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        return float64_default_nan(&env->active_fpu.fp_status);
+    }
+    return negate ? float64_chs(value) : float64_abs(value);
+}
+
+#define FLOAT_UNOP(name, negate)                                      \
+uint64_t helper_float_ ## name ## _d(CPUMIPSState *env, uint64_t value) \
+{                                                                    \
+    value = legacy_sign_d(env, value, negate);                        \
+    update_fcr31(env, GETPC());                                       \
+    return value;                                                    \
+}                                                                    \
+uint32_t helper_float_ ## name ## _s(CPUMIPSState *env, uint32_t value) \
+{                                                                    \
+    value = legacy_sign_s(env, value, negate);                        \
+    update_fcr31(env, GETPC());                                       \
+    return value;                                                    \
+}                                                                    \
+uint64_t helper_float_ ## name ## _ps(uint64_t value)                  \
+{                                                                    \
+    uint32_t low = float32_ ## name(value);                           \
+    uint32_t high = float32_ ## name(value >> 32);                     \
+    return ((uint64_t)high << 32) | low;                               \
+}
+FLOAT_UNOP(abs, false)
+FLOAT_UNOP(chs, true)
 #undef FLOAT_UNOP
 
 /* MIPS specific unary operations */
