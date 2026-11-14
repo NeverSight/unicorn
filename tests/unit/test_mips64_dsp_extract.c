@@ -34,7 +34,8 @@ static void test_mips64_dsp_extract_boundaries(void)
         {UINT64_C(0x123456789abcdef0), UINT64_C(0xfedcba9876543210)},
         {UINT64_C(0x8000000000000000), UINT64_C(0x8000000000000001)}};
     for (unsigned little = 0; little < 2; ++little) {
-        for (unsigned op = 0; op < 5; ++op) {
+        for (unsigned variant = 0; variant < 20; ++variant) {
+            unsigned op = variant % 5, bank = variant / 5;
             uc_engine *uc;
             OK(uc_open(UC_ARCH_MIPS,
                        UC_MODE_MIPS64 | (little ? UC_MODE_LITTLE_ENDIAN
@@ -43,9 +44,11 @@ static void test_mips64_dsp_extract_boundaries(void)
             OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
             const uint32_t enable[] = {0x40086000, 0x3c090100, 0x01094025,
                                        0x40886000, 0xc0};
-            const uint32_t program[] = {0x00800011, 0x00a00013, 0x7ce1fcf8,
-                                        instructions[op], 0x00001810,
-                                        0x00004812, 0x7c3f44b8};
+            const uint32_t program[] = {
+                0x00800011 | (bank << 11), 0x00a00013 | (bank << 11),
+                0x7ce1fcf8, instructions[op] | (bank << 11),
+                0x00001810 | (bank << 21), 0x00004812 | (bank << 21),
+                0x7c3f44b8};
             put_code(uc, 0x10000, enable, 5, little);
             put_code(uc, 0x10040, program, 7, little);
             OK(uc_emu_start(uc, 0x10000, 0x10014, 0, 5));
@@ -99,8 +102,8 @@ static void test_mips64_dsp_extract_boundaries(void)
                         TEST_CHECK(!defined || result == expected);
                         TEST_CHECK(got_hi == expected_hi && got_lo == expected_lo);
                         TEST_CHECK(got_state == state);
-                        TEST_MSG("op=%u little=%u vector=%u shift=%u pos=%u",
-                                 op, little, v, shift, pos);
+                        TEST_MSG("op=%u bank=%u little=%u vector=%u shift=%u pos=%u",
+                                 op, bank, little, v, shift, pos);
                     }
                 }
             }
@@ -109,6 +112,33 @@ static void test_mips64_dsp_extract_boundaries(void)
     }
 }
 
+static void test_mips_dsp_discarded_transfer_requires_enabled_dsp(void)
+{
+    for (unsigned bits = 32; bits <= 64; bits += 32) {
+        for (unsigned little = 0; little < 2; ++little) {
+            for (unsigned bank = 1; bank < 4; ++bank) {
+                for (unsigned low = 0; low < 2; ++low) {
+                    uc_engine *uc;
+                    OK(uc_open(UC_ARCH_MIPS,
+                               (bits == 64 ? UC_MODE_MIPS64 : UC_MODE_MIPS32) |
+                                   (little ? UC_MODE_LITTLE_ENDIAN
+                                           : UC_MODE_BIG_ENDIAN), &uc));
+                    OK(uc_ctl_set_cpu_model(uc, bits == 64 ? UC_CPU_MIPS64_MIPS64DSPR2
+                                                         : UC_CPU_MIPS32_74KF));
+                    OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
+                    uint32_t word = 0x10 | (bank << 21) | (low << 1);
+                    put_code(uc, 0x10000, &word, 1, little);
+                    uc_assert_err(UC_ERR_EXCEPTION,
+                                  uc_emu_start(uc, 0x10000, 0x10004, 0, 1));
+                    OK(uc_close(uc));
+                }
+            }
+        }
+    }
+}
+
 TEST_LIST = {
     {"test_mips64_dsp_extract_boundaries", test_mips64_dsp_extract_boundaries},
+    {"test_mips_dsp_discarded_transfer_requires_enabled_dsp",
+     test_mips_dsp_discarded_transfer_requires_enabled_dsp},
     {NULL, NULL}};

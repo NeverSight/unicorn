@@ -4470,60 +4470,32 @@ static void gen_HILO1_tx79(DisasContext *ctx, uint32_t opc, int reg)
 static void gen_HILO(DisasContext *ctx, uint32_t opc, int acc, int reg)
 {
     TCGContext *tcg_ctx = ctx->uc->tcg_ctx;
+    if (acc != 0) {
+        check_dsp(ctx);
+    }
+
     if (reg == 0 && (opc == OPC_MFHI || opc == OPC_MFLO)) {
         /* Treat as NOP. */
         return;
     }
 
-    if (acc != 0) {
-        check_dsp(ctx);
-    }
-
     switch (opc) {
     case OPC_MFHI:
-#if defined(TARGET_MIPS64)
-        if (acc != 0) {
-            tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_HI[acc]);
-        } else
-#endif
-        {
-            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_HI[acc]);
-        }
+        tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_HI[acc]);
         break;
     case OPC_MFLO:
-#if defined(TARGET_MIPS64)
-        if (acc != 0) {
-            tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_LO[acc]);
-        } else
-#endif
-        {
-            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_LO[acc]);
-        }
+        tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_gpr[reg], tcg_ctx->cpu_LO[acc]);
         break;
     case OPC_MTHI:
         if (reg != 0) {
-#if defined(TARGET_MIPS64)
-            if (acc != 0) {
-                tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_HI[acc], tcg_ctx->cpu_gpr[reg]);
-            } else
-#endif
-            {
-                tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_HI[acc], tcg_ctx->cpu_gpr[reg]);
-            }
+            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_HI[acc], tcg_ctx->cpu_gpr[reg]);
         } else {
             tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_HI[acc], 0);
         }
         break;
     case OPC_MTLO:
         if (reg != 0) {
-#if defined(TARGET_MIPS64)
-            if (acc != 0) {
-                tcg_gen_ext32s_tl(tcg_ctx, tcg_ctx->cpu_LO[acc], tcg_ctx->cpu_gpr[reg]);
-            } else
-#endif
-            {
-                tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_LO[acc], tcg_ctx->cpu_gpr[reg]);
-            }
+            tcg_gen_mov_tl(tcg_ctx, tcg_ctx->cpu_LO[acc], tcg_ctx->cpu_gpr[reg]);
         } else {
             tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_LO[acc], 0);
         }
