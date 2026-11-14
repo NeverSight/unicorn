@@ -546,24 +546,22 @@ static inline void mipsdsp_rndrashift_acc(uint64_t *p,
                                           uint32_t shift,
                                           CPUMIPSState *env)
 {
-    int64_t tempB, tempA;
+    uint64_t tempB, tempA;
 
     tempB = env->active_tc.HI[ac];
     tempA = env->active_tc.LO[ac];
     shift = shift & 0x3F;
 
+    p[2] = (int64_t)tempB >> 63;
     if (shift == 0) {
-        p[2] = tempB >> 63;
         p[1] = (tempB << 1) | (tempA >> 63);
         p[0] = tempA << 1;
+    } else if (shift == 1) {
+        p[0] = tempA;
+        p[1] = tempB;
     } else {
         p[0] = (tempB << (65 - shift)) | (tempA >> (shift - 1));
         p[1] = (int64_t)tempB >> (shift - 1);
-        if (tempB >= 0) {
-            p[2] = 0x0;
-        } else {
-            p[2] = ~0ull;
-        }
     }
 }
 #endif
@@ -3471,6 +3469,21 @@ target_ulong helper_extpdp(target_ulong ac, target_ulong size,
 
 
 #if defined(TARGET_MIPS64)
+static uint64_t mipsdsp_extract_acc(uint64_t hi, uint64_t lo,
+                                  unsigned start, unsigned size)
+{
+    uint64_t value;
+
+    if (start == 0) {
+        value = lo;
+    } else if (start >= 64) {
+        value = hi >> (start - 64);
+    } else {
+        value = (hi << (64 - start)) | (lo >> start);
+    }
+    return value & (UINT64_MAX >> (63 - size));
+}
+
 target_ulong helper_dextp(target_ulong ac, target_ulong size, CPUMIPSState *env)
 {
     int start_pos;
@@ -3490,8 +3503,7 @@ target_ulong helper_dextp(target_ulong ac, target_ulong size, CPUMIPSState *env)
     sub = start_pos - (size + 1);
 
     if (sub >= -1) {
-        temp = (tempB << (64 - len)) | (tempA >> len);
-        temp = temp & ((1ULL << (size + 1)) - 1);
+        temp = mipsdsp_extract_acc(tempB, tempA, len, size);
         set_DSPControl_efi(0, env);
     } else {
         set_DSPControl_efi(1, env);
@@ -3519,8 +3531,7 @@ target_ulong helper_dextpdp(target_ulong ac, target_ulong size,
     sub = start_pos - (size + 1);
 
     if (sub >= -1) {
-        temp = (tempB << (64 - len)) | (tempA >> len);
-        temp = temp & ((1ULL << (size + 1)) - 1);
+        temp = mipsdsp_extract_acc(tempB, tempA, len, size);
         set_DSPControl_pos(sub, env);
         set_DSPControl_efi(0, env);
     } else {
@@ -3568,7 +3579,10 @@ void helper_dshilo(target_ulong shift, target_ulong ac, CPUMIPSState *env)
     tempB = env->active_tc.HI[ac];
     tempA = env->active_tc.LO[ac];
 
-    if (shift_t != 0) {
+    if (shift_t == -64) {
+        tempB = tempA;
+        tempA = 0;
+    } else if (shift_t != 0) {
         if (shift_t >= 0) {
             tempA = (tempB << (64 - shift_t)) | (tempA >> shift_t);
             tempB = tempB >> shift_t;
