@@ -274,7 +274,7 @@ FOP_PROTO(rint)
 #define FOP_PROTO(op)                       \
 DEF_HELPER_2(float_ ## op ## _s, i32, env, i32)  \
 DEF_HELPER_2(float_ ## op ## _d, i64, env, i64)  \
-DEF_HELPER_1(float_ ## op ## _ps, i64, i64)
+DEF_HELPER_2(float_ ## op ## _ps, i64, env, i64)
 FOP_PROTO(abs)
 FOP_PROTO(chs)
 #undef FOP_PROTO

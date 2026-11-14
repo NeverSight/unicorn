@@ -12394,7 +12394,11 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             TCGv_i64 fp0 = tcg_temp_new_i64(tcg_ctx);
 
             gen_load_fpr64(ctx, fp0, fs);
-            gen_helper_float_abs_ps(tcg_ctx, fp0, fp0);
+            if (ctx->abs2008) {
+                tcg_gen_andi_i64(tcg_ctx, fp0, fp0, 0x7fffffff7fffffffULL);
+            } else {
+                gen_helper_float_abs_ps(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
+            }
             gen_store_fpr64(ctx, fp0, fd);
             tcg_temp_free_i64(tcg_ctx, fp0);
         }
@@ -12415,7 +12419,11 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             TCGv_i64 fp0 = tcg_temp_new_i64(tcg_ctx);
 
             gen_load_fpr64(ctx, fp0, fs);
-            gen_helper_float_chs_ps(tcg_ctx, fp0, fp0);
+            if (ctx->abs2008) {
+                tcg_gen_xori_i64(tcg_ctx, fp0, fp0, 0x8000000080000000ULL);
+            } else {
+                gen_helper_float_chs_ps(tcg_ctx, fp0, tcg_ctx->cpu_env, fp0);
+            }
             gen_store_fpr64(ctx, fp0, fd);
             tcg_temp_free_i64(tcg_ctx, fp0);
         }

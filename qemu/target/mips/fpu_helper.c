@@ -1010,10 +1010,11 @@ uint32_t helper_float_ ## name ## _s(CPUMIPSState *env, uint32_t value) \
     update_fcr31(env, GETPC());                                       \
     return value;                                                    \
 }                                                                    \
-uint64_t helper_float_ ## name ## _ps(uint64_t value)                  \
+uint64_t helper_float_ ## name ## _ps(CPUMIPSState *env, uint64_t value) \
 {                                                                    \
-    uint32_t low = float32_ ## name(value);                           \
-    uint32_t high = float32_ ## name(value >> 32);                     \
+    uint32_t low = legacy_sign_s(env, value, negate);                  \
+    uint32_t high = legacy_sign_s(env, value >> 32, negate);           \
+    update_fcr31(env, GETPC());                                       \
     return ((uint64_t)high << 32) | low;                               \
 }
 FLOAT_UNOP(abs, false)
