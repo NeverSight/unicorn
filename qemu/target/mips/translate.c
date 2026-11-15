@@ -16281,6 +16281,33 @@ static bool decode_micromips64_legacy(DisasContext *ctx)
         gen_st(ctx, OPC_SD, rt, rs, (int16_t)word);
         return true;
     }
+    switch (word & 63) {
+    case 0x2c:
+        opc = OPC_DEXT;
+        break;
+    case 0x24:
+        opc = OPC_DEXTM;
+        break;
+    case 0x14:
+        opc = OPC_DEXTU;
+        break;
+    case 0x0c:
+        opc = OPC_DINS;
+        break;
+    case 0x04:
+        opc = OPC_DINSM;
+        break;
+    case 0x34:
+        opc = OPC_DINSU;
+        break;
+    default:
+        opc = 0;
+        break;
+    }
+    if (opc) {
+        gen_bitops(ctx, opc, rt, rs, extract32(word, 6, 5), rd);
+        return true;
+    }
     switch (word & 0x7ff) {
     case 0x150:
         gen_arith(ctx, OPC_DADDU, rd, rs, rt);
