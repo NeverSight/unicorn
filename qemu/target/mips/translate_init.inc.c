@@ -489,6 +489,30 @@ const mips_def_t mips_defs[] =
                       ASE_MT,
         .mmu_type = MMU_TYPE_R4000,
     },
+    {
+        /* Generic pre-R6 microMIPS with the implemented scalar/PS FPU.
+           This is an execution profile, not an M14K hardware model. */
+        .name = "microMIPS32R2-generic",
+        .CP0_PRid = 0x00010000,
+        .CP0_Config0 = MIPS_CONFIG0 | (1 << CP0C0_AR) |
+                       (MMU_TYPE_R4000 << CP0C0_MT),
+        .CP0_Config1 = MIPS_CONFIG1 | (1 << CP0C1_FP) | (31 << CP0C1_MMU),
+        .CP0_Config2 = MIPS_CONFIG2,
+        .CP0_Config3 = MIPS_CONFIG3 | (2 << CP0C3_ISA),
+        .CP0_LLAddr_rw_bitmask = 0,
+        .CP0_LLAddr_shift = 0,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        .CP0_Status_rw_bitmask = 0x3678FF1F,
+        .CP1_fcr0 = (1 << FCR0_F64) | (1 << FCR0_PS) | (1 << FCR0_L) |
+                    (1 << FCR0_W) | (1 << FCR0_D) | (1 << FCR0_S),
+        .CP1_fcr31 = 0,
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
+        .SEGBITS = 32,
+        .PABITS = 32,
+        .insn_flags = CPU_MIPS32R2 | ASE_MICROMIPS,
+        .mmu_type = MMU_TYPE_R4000,
+    },
 #if defined(TARGET_MIPS64)
     {
         .name = "R4000",
@@ -874,6 +898,30 @@ const mips_def_t mips_defs[] =
         .mmu_type = MMU_TYPE_R4000,
     },
 
+    {
+        /* The 64-bit counterpart of the generic pre-R6 microMIPS profile. */
+        .name = "microMIPS64R2-generic",
+        .CP0_PRid = 0x00010000,
+        .CP0_Config0 = MIPS_CONFIG0 | (1 << CP0C0_AR) | (2 << CP0C0_AT) |
+                       (MMU_TYPE_R4000 << CP0C0_MT),
+        .CP0_Config1 = MIPS_CONFIG1 | (1 << CP0C1_FP) | (63 << CP0C1_MMU),
+        .CP0_Config2 = MIPS_CONFIG2,
+        .CP0_Config3 = MIPS_CONFIG3 | (2 << CP0C3_ISA) | (1 << CP0C3_LPA),
+        .CP0_LLAddr_rw_bitmask = 0,
+        .CP0_LLAddr_shift = 0,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        .CP0_Status_rw_bitmask = 0x36FBFFFF,
+        .CP0_EBaseWG_rw_bitmask = (1 << CP0EBase_WG),
+        .CP1_fcr0 = (1 << FCR0_F64) | (1 << FCR0_PS) | (1 << FCR0_L) |
+                    (1 << FCR0_W) | (1 << FCR0_D) | (1 << FCR0_S),
+        .CP1_fcr31 = 0,
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
+        .SEGBITS = 42,
+        .PABITS = 36,
+        .insn_flags = CPU_MIPS64R2 | ASE_MICROMIPS,
+        .mmu_type = MMU_TYPE_R4000,
+    },
 #endif
 };
 const int mips_defs_number = ARRAY_SIZE(mips_defs);
