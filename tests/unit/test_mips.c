@@ -711,7 +711,136 @@ static void test_micromips64_legacy_arguments_and_frame(void)
     }
 }
 
+static void check_mips_fp_memory_alignment(bool r6)
+{
+    // MIPS64 Volume II rev 2.50: COP1X aligned memory forms require the
+    // natural alignment. LUXC1/SUXC1 instead ignore the low three bits.
+    // R6's ordinary COP1 loads/stores permit unaligned addresses.
+    static const struct {
+        uint32_t word;
+        unsigned bytes;
+        bool store;
+        bool ignore_low;
+    } forms[] = {
+        {0xc4820000, 4, false, false}, // lwc1 f2,0(a0)
+        {0xd4820000, 8, false, false}, // ldc1 f2,0(a0)
+        {0xe4820000, 4, true, false},  // swc1 f2,0(a0)
+        {0xf4820000, 8, true, false},  // sdc1 f2,0(a0)
+        {0x4c850080, 4, false, false}, // lwxc1 f2,a1(a0)
+        {0x4c850081, 8, false, false}, // ldxc1 f2,a1(a0)
+        {0x4c851008, 4, true, false},  // swxc1 f2,a1(a0)
+        {0x4c851009, 8, true, false},  // sdxc1 f2,a1(a0)
+        {0x4c850085, 8, false, true},  // luxc1 f2,a1(a0)
+        {0x4c85100d, 8, true, true},   // suxc1 f2,a1(a0)
+    };
+    const uint64_t data = code_start + 0x2000;
+    const uint64_t initial = 0xfedcba9876543210ull;
+    for (unsigned wide = 0; wide < 2; ++wide) {
+        for (unsigned big = 0; big < 2; ++big) {
+            for (unsigned fr = 0; fr < 2; ++fr) {
+                if ((wide || r6) && !fr)
+                    continue;
+                uc_engine *uc;
+                uint64_t status = 0;
+                OK(uc_open(UC_ARCH_MIPS,
+                           (wide ? UC_MODE_MIPS64 : UC_MODE_MIPS32) |
+                               (big ? UC_MODE_BIG_ENDIAN : 0),
+                           &uc));
+                OK(uc_ctl_set_cpu_model(
+                    uc, wide ? (r6 ? UC_CPU_MIPS64_I6400
+                                   : UC_CPU_MIPS64_MIPS64R2_GENERIC)
+                             : (r6 ? UC_CPU_MIPS32_MIPS32R6_GENERIC
+                                   : UC_CPU_MIPS32_74KF)));
+                OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+                status = (status & ~0x04000000ull) | 0x20000000 |
+                         (fr ? 0x04000000 : 0);
+                OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+                OK(uc_mem_map(uc, code_start, code_len, UC_PROT_ALL));
+                for (unsigned form = 0; form < (r6 ? 4 : 10); ++form) {
+                    if (!fr && forms[form].ignore_low)
+                        continue;
+                    uint8_t code[4];
+                    for (unsigned k = 0; k < 4; ++k)
+                        code[k] = forms[form].word >> (8 * (big ? 3 - k : k));
+                    const uint64_t pc = code_start + 4 * form;
+                    OK(uc_mem_write(uc, pc, code, sizeof(code)));
+                    for (unsigned offset = 0; offset < 8; ++offset) {
+                        uint8_t before[16], expected[16], actual[16];
+                        for (unsigned k = 0; k < sizeof(before); ++k)
+                            before[k] = expected[k] = 0x91 + k;
+                        uint64_t base = data + (form < 4 ? offset : 0);
+                        uint64_t index = form < 4 ? 0 : offset;
+                        uint64_t low = fr ? initial : (uint32_t)initial;
+                        uint64_t high = initial >> 32;
+                        uint64_t fcsr = 0x00800004;
+                        OK(uc_mem_write(uc, data, before, sizeof(before)));
+                        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &base));
+                        OK(uc_reg_write(uc, UC_MIPS_REG_A1, &index));
+                        OK(uc_reg_write(uc, UC_MIPS_REG_F2, &low));
+                        if (!fr)
+                            OK(uc_reg_write(uc, UC_MIPS_REG_F3, &high));
+                        OK(uc_reg_write(uc, UC_MIPS_REG_FCSR, &fcsr));
+                        // R6 masks legacy FCC bits and retains its NaN mode.
+                        OK(uc_reg_read(uc, UC_MIPS_REG_FCSR, &fcsr));
+                        const uint64_t initial_fcsr = fcsr;
+                        const unsigned size = forms[form].bytes;
+                        const bool valid = r6 || forms[form].ignore_low ||
+                                           offset % size == 0;
+                        const unsigned start = forms[form].ignore_low ? 0 : offset;
+                        const uc_err result = uc_emu_start(uc, pc, pc + 4, 0, 1);
+                        TEST_CHECK((result == UC_ERR_OK) == valid);
+                        TEST_MSG("r6=%u wide=%u big=%u fr=%u form=%u offset=%u: %s",
+                                 r6, wide, big, fr, form, offset,
+                                 uc_strerror(result));
+                        uint64_t value = initial;
+                        if (valid && forms[form].store) {
+                            for (unsigned k = 0; k < size; ++k)
+                                expected[start + k] =
+                                    initial >> (8 * (big ? size - 1 - k : k));
+                        } else if (valid) {
+                            value = 0;
+                            for (unsigned k = 0; k < size; ++k)
+                                value |= (uint64_t)before[start + k]
+                                         << (8 * (big ? size - 1 - k : k));
+                        }
+                        OK(uc_mem_read(uc, data, actual, sizeof(actual)));
+                        TEST_CHECK(memcmp(actual, expected, sizeof(actual)) == 0);
+                        OK(uc_reg_read(uc, UC_MIPS_REG_F2, &low));
+                        // A valid word load defines only the low word in FR=1.
+                        if (!fr || (valid && !forms[form].store && size == 4))
+                            TEST_CHECK((uint32_t)low == (uint32_t)value);
+                        else
+                            TEST_CHECK(low == value);
+                        if (!fr) {
+                            OK(uc_reg_read(uc, UC_MIPS_REG_F3, &high));
+                            TEST_CHECK(high == (valid && !forms[form].store &&
+                                                        size == 8
+                                                    ? value >> 32
+                                                    : initial >> 32));
+                        }
+                        OK(uc_reg_read(uc, UC_MIPS_REG_FCSR, &fcsr));
+                        TEST_CHECK(fcsr == initial_fcsr);
+                    }
+                }
+                OK(uc_close(uc));
+            }
+        }
+    }
+}
+
+static void test_mips_fp_memory_alignment(void)
+{
+    check_mips_fp_memory_alignment(false);
+}
+
+static void test_mips_r6_fp_unaligned_memory(void)
+{
+    check_mips_fp_memory_alignment(true);
+}
+
 TEST_LIST = {
+    {"test_mips_fp_memory_alignment", test_mips_fp_memory_alignment},
+    {"test_mips_r6_fp_unaligned_memory", test_mips_r6_fp_unaligned_memory},
     {"test_micromips_multiple_words", test_micromips_multiple_words},
     {"test_micromips64_legacy_arguments_and_frame",
      test_micromips64_legacy_arguments_and_frame},
