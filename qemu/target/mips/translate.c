@@ -15022,9 +15022,11 @@ enum {
     MFC1 = 0x80,
     CVT_S_PL = 0x84,
     TRUNC_L = 0x8c,
+    DMFC1 = 0x90,
     MTC1 = 0xa0,
     CVT_S_PU = 0xa4,
     TRUNC_W = 0xac,
+    DMTC1 = 0xb0,
     MFHC1 = 0xc0,
     ROUND_L = 0xcc,
     MTHC1 = 0xe0,
@@ -16017,6 +16019,16 @@ static void gen_pool32fxf(DisasContext *ctx, int rt, int rs)
     case FLOAT_1BIT_FMT(MTC1, 0):
         mips32_op = OPC_MTC1;
         goto do_cp1;
+#if defined(TARGET_MIPS64)
+    case DMFC1:
+        check_mips_64(ctx);
+        mips32_op = OPC_DMFC1;
+        goto do_cp1;
+    case DMTC1:
+        check_mips_64(ctx);
+        mips32_op = OPC_DMTC1;
+        goto do_cp1;
+#endif
     case FLOAT_1BIT_FMT(MFHC1, 0):
         mips32_op = OPC_MFHC1;
         goto do_cp1;
@@ -16244,6 +16256,82 @@ static void gen_pool32fxf(DisasContext *ctx, int rt, int rs)
 }
 
 #if defined(TARGET_MIPS64)
+/* Pre-R6 wide scalar instructions used by microMIPS64 function frames and
+ * integer arguments to COP1. Keep the legacy pool separate from R6 opcodes. */
+static bool decode_micromips64_legacy(DisasContext *ctx)
+{
+    uint32_t word = ctx->opcode, opc;
+    unsigned major = word >> 26;
+    int rt = extract32(word, 21, 5), rs = extract32(word, 16, 5);
+    int rd = extract32(word, 11, 5);
+    if ((ctx->insn_flags & ISA_MIPS32R6) ||
+        !(major == POOL32S || major == DADDIU32 || major == SD32 ||
+          major == LD32)) {
+        return false;
+    }
+    check_mips_64(ctx);
+    switch (major) {
+    case DADDIU32:
+        gen_arith_imm(ctx, OPC_DADDIU, rt, rs, (int16_t)word);
+        return true;
+    case LD32:
+        gen_ld(ctx, OPC_LD, rt, rs, (int16_t)word);
+        return true;
+    case SD32:
+        gen_st(ctx, OPC_SD, rt, rs, (int16_t)word);
+        return true;
+    }
+    switch (word & 0x7ff) {
+    case 0x150:
+        gen_arith(ctx, OPC_DADDU, rd, rs, rt);
+        return true;
+    case 0x1d0:
+        gen_arith(ctx, OPC_DSUBU, rd, rs, rt);
+        return true;
+    case 0x000:
+        opc = OPC_DSLL;
+        break;
+    case 0x040:
+        opc = OPC_DSRL;
+        break;
+    case 0x080:
+        opc = OPC_DSRA;
+        break;
+    case 0x0c0:
+        opc = OPC_DROTR;
+        break;
+    case 0x008:
+        opc = OPC_DSLL32;
+        break;
+    case 0x048:
+        opc = OPC_DSRL32;
+        break;
+    case 0x088:
+        opc = OPC_DSRA32;
+        break;
+    case 0x0c8:
+        opc = OPC_DROTR32;
+        break;
+    case 0x010:
+        gen_shift(ctx, OPC_DSLLV, rd, rs, rt);
+        return true;
+    case 0x050:
+        gen_shift(ctx, OPC_DSRLV, rd, rs, rt);
+        return true;
+    case 0x090:
+        gen_shift(ctx, OPC_DSRAV, rd, rs, rt);
+        return true;
+    case 0x0d0:
+        gen_shift(ctx, OPC_DROTRV, rd, rs, rt);
+        return true;
+    default:
+        generate_exception_end(ctx, EXCP_RI);
+        return true;
+    }
+    gen_shift_imm(ctx, opc, rt, rs, rd);
+    return true;
+}
+
 /* microMIPS64 Volume II-B, revision 6.05. Decode physical fields here;
  * use the existing TCG operations, without rewriting to classic opcodes. */
 static bool decode_micromips64_r6(DisasContext *ctx)
@@ -16363,7 +16451,7 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
     ctx->opcode = (ctx->opcode << 16) | insn;
 
 #if defined(TARGET_MIPS64)
-    if (decode_micromips64_r6(ctx)) {
+    if (decode_micromips64_r6(ctx) || decode_micromips64_legacy(ctx)) {
         return;
     }
 #endif
