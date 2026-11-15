@@ -502,7 +502,113 @@ static void test_micromips_legacy_fpu(void)
     }
 }
 
+static void test_micromips64_legacy_arguments_and_frame(void)
+{
+    // GNU as 2.47, microMIPS64r2, independently checked in both byte orders.
+    const struct {
+        uint32_t word;
+        uint64_t expected;
+    } forms[] = {
+        {0x5c44ffef, 0x8123456789abcddeull}, // daddiu $2,$4,-17
+        {0x58a41150, 0x8123456789abcdf6ull}, // daddu $2,$4,$5
+        {0x58a411d0, 0x8123456789abcde8ull}, // dsubu $2,$4,$5
+        {0x58443800, 0x91a2b3c4d5e6f780ull}, // dsll $2,$4,7
+        {0x58443840, 0x0102468acf13579bull}, // dsrl $2,$4,7
+        {0x58443880, 0xff02468acf13579bull}, // dsra $2,$4,7
+        {0x584438c0, 0xdf02468acf13579bull}, // drotr $2,$4,7
+        {0x58443808, 0xd5e6f78000000000ull}, // dsll32 $2,$4,7
+        {0x58443848, 0x000000000102468aull}, // dsrl32 $2,$4,7
+        {0x58443888, 0xffffffffff02468aull}, // dsra32 $2,$4,7
+        {0x584438c8, 0xcf13579bdf02468aull}, // drotr32 $2,$4,7
+        {0x58851010, 0x91a2b3c4d5e6f780ull}, // dsllv $2,$4,$5
+        {0x58851050, 0x0102468acf13579bull}, // dsrlv $2,$4,$5
+        {0x58851090, 0xff02468acf13579bull}, // dsrav $2,$4,$5
+        {0x588510d0, 0xdf02468acf13579bull}, // drotrv $2,$4,$5
+    };
+    const uint32_t transfers[] = {0x54802c3b, 0x5440243b}; // DMTC1 / DMFC1
+    const uint32_t frame[] = {0x5fbdffe0, 0xd89d0010, 0xdc5d0010, 0x5fbd0020};
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        OK(uc_open(UC_ARCH_MIPS,
+                   UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN),
+                   &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R2_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        uint64_t a = 0x8123456789abcdefull, b = 7, result = 0, status = 0;
+        OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        status |= 0x24000000;
+        OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &a));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A1, &b));
+        for (unsigned i = 0; i < sizeof(forms) / sizeof(forms[0]); ++i) {
+            uint8_t bytes[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = forms[i].word >> (k < 2 ? 16 : 0);
+                bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            OK(uc_mem_write(uc, code_start + 4 * i, bytes, sizeof(bytes)));
+            OK(uc_emu_start(uc, (code_start + 4 * i) | 1,
+                            code_start + 4 * (i + 1), 0, 1));
+            OK(uc_reg_read(uc, UC_MIPS_REG_V0, &result));
+            TEST_CHECK(result == forms[i].expected);
+            TEST_MSG("word %08x got %016llx expected %016llx", forms[i].word,
+                     (unsigned long long)result,
+                     (unsigned long long)forms[i].expected);
+        }
+        for (unsigned group = 0; group < 2; ++group) {
+            const uint32_t *words = group ? frame : transfers;
+            unsigned count = group ? 4 : 2;
+            uint8_t bytes[16];
+            for (unsigned k = 0; k < count * 4; ++k) {
+                unsigned half = words[k / 4] >> (k % 4 < 2 ? 16 : 0);
+                bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            uint64_t pc = code_start + 128 + group * 32, sp = code_start + 2048;
+            OK(uc_mem_write(uc, pc, bytes, count * 4));
+            OK(uc_reg_write(uc, UC_MIPS_REG_SP, &sp));
+            OK(uc_emu_start(uc, pc | 1, pc + count * 4, 0, count));
+            OK(uc_reg_read(uc, UC_MIPS_REG_V0, &result));
+            TEST_CHECK(result == a);
+            OK(uc_reg_read(uc, UC_MIPS_REG_SP, &result));
+            TEST_CHECK(result == sp);
+            if (group) {
+                uint8_t memory[8];
+                OK(uc_mem_read(uc, sp - 16, memory, 8));
+                for (unsigned k = 0; k < 8; ++k)
+                    TEST_CHECK(memory[k] ==
+                               (uint8_t)(a >> (8 * (big ? 7 - k : k))));
+            }
+        }
+        OK(uc_close(uc));
+        // A 32-bit generic micro FPU must not acquire doubleword GPR transfers.
+        OK(uc_open(UC_ARCH_MIPS,
+                   UC_MODE_MIPS32 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN),
+                   &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS32_MICROMIPS32R2_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        status |= 0x24000000;
+        OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        for (unsigned i = 0; i < 2; ++i) {
+            uint8_t bytes[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = transfers[i] >> (k < 2 ? 16 : 0);
+                bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            OK(uc_mem_write(uc, code_start + i * 4, bytes, 4));
+            TEST_CHECK(uc_emu_start(uc, (code_start + i * 4) | 1,
+                                    code_start + i * 4 + 4, 0,
+                                    1) == UC_ERR_EXCEPTION);
+        }
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
+    {"test_micromips64_legacy_arguments_and_frame",
+     test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
@@ -516,6 +622,6 @@ TEST_LIST = {
     {"test_mips_mips_fpr", test_mips_mips_fpr},
     {"test_mips_stop_delay_slot_from_qiling",
      test_mips_stop_delay_slot_from_qiling},
-     {"test_mips_simple_coredump_2134", test_mips_simple_coredump_2134},
-     {"test_mips_simple_coredump_2137", test_mips_simple_coredump_2137},
+    {"test_mips_simple_coredump_2134", test_mips_simple_coredump_2134},
+    {"test_mips_simple_coredump_2137", test_mips_simple_coredump_2137},
     {NULL, NULL}};
