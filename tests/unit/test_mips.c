@@ -399,6 +399,84 @@ static void test_micromips64r6_doublewords(void)
     }
 }
 
+static void test_micromips_multiple_words(void)
+{
+    // microMIPS32 Vol. II r5.03 LWM/SWM: each element occupies four bytes;
+    // loads sign-extend words on a 64-bit CPU. Test bytes independently of
+    // the reciprocal load/store so a shared width defect cannot cancel out.
+    const unsigned registers[] = {16, 17, 18, 19, 20, 21, 22, 23, 30, 31};
+    for (unsigned wide = 0; wide < 2; ++wide) {
+        for (unsigned big = 0; big < 2; ++big) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS, (wide ? UC_MODE_MIPS64 : UC_MODE_MIPS32) |
+                           (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+            OK(uc_ctl_set_cpu_model(uc, wide ? UC_CPU_MIPS64_MICROMIPS64R2_GENERIC
+                                            : UC_CPU_MIPS32_MICROMIPS32R2_GENERIC));
+            OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+            OK(uc_mem_map(uc, 0x20000, 4096, UC_PROT_ALL));
+            uint64_t sp = 0x20000;
+            OK(uc_reg_write(uc, UC_MIPS_REG_SP, &sp));
+            unsigned site = 0;
+            for (unsigned compact = 0; compact < 2; ++compact) {
+                for (unsigned count = 0; count <= (compact ? 4 : 9); ++count) {
+                    for (unsigned ra = 0; ra < 2; ++ra) {
+                        if ((!count && !ra) || (compact && (!ra || !count)))
+                            continue;
+                        const unsigned offset = compact ? 60 : 144;
+                        const unsigned size = compact ? 2 : 4;
+                        const uint32_t store = compact ? 0x454f | ((count - 1) << 4)
+                            : 0x201dd000 | ((count | (ra << 4)) << 21) | offset;
+                        const uint32_t load = compact ? store - 0x40 : store - 0x8000;
+                        uint8_t code[8];
+                        for (unsigned inst = 0; inst < 2; ++inst) {
+                            const uint32_t word = inst ? load : store;
+                            for (unsigned k = 0; k < size; ++k) {
+                                const unsigned half = word >> (size == 4 && k < 2 ? 16 : 0);
+                                code[inst * size + k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+                            }
+                        }
+                        const uint64_t pc = code_start + site;
+                        site += sizeof(code);
+                        OK(uc_mem_write(uc, pc, code, size * 2));
+                        uint64_t values[10];
+                        uint8_t expected[256], actual[256];
+                        memset(expected, 0xa5, sizeof(expected));
+                        OK(uc_mem_write(uc, sp, expected, sizeof(expected)));
+                        for (unsigned i = 0; i < 10; ++i) {
+                            const uint32_t word = 0x87654321u ^ (0x12345678u * i);
+                            values[i] = 0xabcdef1200000000ull | word;
+                            OK(uc_reg_write(uc, UC_MIPS_REG_0 + registers[i], &values[i]));
+                            if (i < count || (i == 9 && ra)) {
+                                const unsigned pos = offset + 4 * (i == 9 ? count : i);
+                                for (unsigned k = 0; k < 4; ++k)
+                                    expected[pos + k] = word >> (8 * (big ? 3 - k : k));
+                            }
+                        }
+                        OK(uc_emu_start(uc, pc | 1, pc + size, 0, 1));
+                        OK(uc_mem_read(uc, sp, actual, sizeof(actual)));
+                        TEST_CHECK(memcmp(actual, expected, sizeof(actual)) == 0);
+                        for (unsigned i = 0; i < 10; ++i) {
+                            uint64_t zero = 0;
+                            OK(uc_reg_write(uc, UC_MIPS_REG_0 + registers[i], &zero));
+                        }
+                        OK(uc_emu_start(uc, (pc + size) | 1, pc + 2 * size, 0, 1));
+                        for (unsigned i = 0; i < 10; ++i) {
+                            uint64_t value = 0;
+                            OK(uc_reg_read(uc, UC_MIPS_REG_0 + registers[i], &value));
+                            uint64_t wanted = i < count || (i == 9 && ra)
+                                ? (uint64_t)(int64_t)(int32_t)values[i] : 0;
+                            if (!wide)
+                                wanted = (uint32_t)wanted;
+                            TEST_CHECK(value == wanted);
+                        }
+                    }
+                }
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
 static void test_micromips_legacy_fpu(void)
 {
     // Literal microMIPS instructions, in fetch-halfword order, run directly
@@ -634,6 +712,7 @@ static void test_micromips64_legacy_arguments_and_frame(void)
 }
 
 TEST_LIST = {
+    {"test_micromips_multiple_words", test_micromips_multiple_words},
     {"test_micromips64_legacy_arguments_and_frame",
      test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
