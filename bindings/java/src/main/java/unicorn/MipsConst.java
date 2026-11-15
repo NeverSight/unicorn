@@ -22,7 +22,8 @@ public interface MipsConst {
     public static final int UC_CPU_MIPS32_P5600 = 13;
     public static final int UC_CPU_MIPS32_MIPS32R6_GENERIC = 14;
     public static final int UC_CPU_MIPS32_I7200 = 15;
-    public static final int UC_CPU_MIPS32_ENDING = 16;
+    public static final int UC_CPU_MIPS32_MICROMIPS32R2_GENERIC = 16;
+    public static final int UC_CPU_MIPS32_ENDING = 17;
 
     // MIPS64 CPUS
 
@@ -40,7 +41,8 @@ public interface MipsConst {
     public static final int UC_CPU_MIPS64_LOONGSON_2F = 11;
     public static final int UC_CPU_MIPS64_MIPS64DSPR2 = 12;
     public static final int UC_CPU_MIPS64_MICROMIPS64R6_GENERIC = 13;
-    public static final int UC_CPU_MIPS64_ENDING = 14;
+    public static final int UC_CPU_MIPS64_MICROMIPS64R2_GENERIC = 14;
+    public static final int UC_CPU_MIPS64_ENDING = 15;
 
     // MIPS registers
 

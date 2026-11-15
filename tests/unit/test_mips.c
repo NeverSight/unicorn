@@ -399,7 +399,111 @@ static void test_micromips64r6_doublewords(void)
     }
 }
 
+static void test_micromips_legacy_fpu(void)
+{
+    // Literal microMIPS instructions, in fetch-halfword order, run directly
+    // through the micro decoder. No caller translates them to classic COP1.
+    const struct {
+        uint32_t word;
+        uint64_t a, b, c, expected;
+        bool full_register;
+    } cases[] = {
+        {0x54c41030, 0x3fa00000, 0xbfc00000, 0, 0xbe800000, false}, // add.s
+        {0x54c41130, 0x3ff4000000000000ull, 0xbff8000000000000ull,
+         0, 0xbfd0000000000000ull, true}, // add.d
+        {0x54c41230, 0x3f8000003fa00000ull, 0x40000000bfc00000ull,
+         0, 0x40400000be800000ull, true}, // add.ps
+        {0x54c41201, 0x3fa00000, 0xbfc00000, 0x40800000,
+         0x40080000, false}, // madd.s f2,f8,f4,f6: 4 + 1.25 * -1.5
+    };
+    for (unsigned wide = 0; wide < 2; ++wide) {
+        for (unsigned big = 0; big < 2; ++big) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS, (wide ? UC_MODE_MIPS64 : UC_MODE_MIPS32) |
+                           (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN),
+                       &uc));
+            OK(uc_ctl_set_cpu_model(uc, wide ? UC_CPU_MIPS64_MICROMIPS64R2_GENERIC
+                                            : UC_CPU_MIPS32_MICROMIPS32R2_GENERIC));
+            OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+            uint64_t status = 0;
+            OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            status |= 0x24000000; // CU1 and FR=1, legacy NAN/ABS mode
+            OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                uint8_t bytes[4];
+                for (unsigned k = 0; k < 4; ++k) {
+                    unsigned half = cases[i].word >> (k < 2 ? 16 : 0);
+                    bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+                }
+                OK(uc_mem_write(uc, code_start + 4 * i, bytes, sizeof(bytes)));
+                uint64_t actual = 0;
+                uint32_t csr = 0;
+                OK(uc_reg_write(uc, UC_MIPS_REG_F4, &cases[i].a));
+                OK(uc_reg_write(uc, UC_MIPS_REG_F6, &cases[i].b));
+                OK(uc_reg_write(uc, UC_MIPS_REG_F8, &cases[i].c));
+                OK(uc_reg_write(uc, UC_MIPS_REG_FCSR, &csr));
+                OK(uc_emu_start(uc, (code_start + 4 * i) | 1,
+                                code_start + 4 * (i + 1), 0, 1));
+                OK(uc_reg_read(uc, UC_MIPS_REG_F2, &actual));
+                TEST_CHECK((cases[i].full_register ? actual : (uint32_t)actual) ==
+                           cases[i].expected);
+                OK(uc_reg_read(uc, UC_MIPS_REG_FCSR, &csr));
+                TEST_CHECK(csr == 0);
+            }
+            // FR=0 doubles span two architectural FPR words in either byte
+            // order. The byte order affects fetch, not the register pairing.
+            status &= ~0x04000000ull;
+            OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            uint64_t zero = 0, a_hi = 0x3ff40000, b_hi = 0xbff80000;
+            uint64_t lo = 0, hi = 0;
+            OK(uc_reg_write(uc, UC_MIPS_REG_F4, &zero));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F5, &a_hi));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F6, &zero));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F7, &b_hi));
+            OK(uc_emu_start(uc, (code_start + 4) | 1, code_start + 8, 0, 1));
+            OK(uc_reg_read(uc, UC_MIPS_REG_F2, &lo));
+            OK(uc_reg_read(uc, UC_MIPS_REG_F3, &hi));
+            TEST_CHECK((uint32_t)lo == 0);
+            TEST_CHECK((uint32_t)hi == 0xbfd00000);
+
+            // Legacy ABS signals Invalid for a signaling NaN and suppresses
+            // the destination write when the exception is enabled.
+            const uint32_t abs_word = 0x5444037b; // abs.s f2,f4
+            uint8_t abs_bytes[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = abs_word >> (k < 2 ? 16 : 0);
+                abs_bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            OK(uc_mem_write(uc, code_start + 32, abs_bytes, sizeof(abs_bytes)));
+            uint64_t snan = 0x7fc00000, sentinel = 0x12345678, result = 0;
+            uint32_t csr = 0x800;
+            OK(uc_reg_write(uc, UC_MIPS_REG_F4, &snan));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F2, &sentinel));
+            OK(uc_reg_write(uc, UC_MIPS_REG_FCSR, &csr));
+            TEST_CHECK(uc_emu_start(uc, (code_start + 32) | 1,
+                                   code_start + 36, 0, 1) == UC_ERR_EXCEPTION);
+            OK(uc_reg_read(uc, UC_MIPS_REG_F2, &result));
+            OK(uc_reg_read(uc, UC_MIPS_REG_FCSR, &csr));
+            TEST_CHECK((uint32_t)result == sentinel);
+            TEST_CHECK(csr & 0x10000);
+            // Exposing a FPU does not bypass the guest coprocessor enable.
+            csr = 0;
+            OK(uc_reg_write(uc, UC_MIPS_REG_FCSR, &csr));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F4, &cases[0].a));
+            OK(uc_reg_write(uc, UC_MIPS_REG_F6, &cases[0].b));
+            status &= ~0x20000000ull;
+            OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            TEST_CHECK(uc_emu_start(uc, code_start | 1, code_start + 4, 0, 1) ==
+                       UC_ERR_EXCEPTION);
+            OK(uc_reg_read(uc, UC_MIPS_REG_F2, &result));
+            TEST_CHECK((uint32_t)result == sentinel);
+            OK(uc_close(uc));
+        }
+    }
+}
+
 TEST_LIST = {
+    {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
