@@ -524,6 +524,13 @@ static void test_micromips64_legacy_arguments_and_frame(void)
         {0x58851050, 0x0102468acf13579bull}, // dsrlv $2,$4,$5
         {0x58851090, 0xff02468acf13579bull}, // dsrav $2,$4,$5
         {0x588510d0, 0xdf02468acf13579bull}, // drotrv $2,$4,$5
+        {0x584481ec, 0x000000000001579bull}, // dext $2,$4,7,17
+        {0x584439e4, 0x0000008acf13579bull}, // dextm $2,$4,7,40
+        {0x584481d4, 0x000000000000468aull}, // dextu $2,$4,39,17
+        {0x5844b9cc, 0x55aa55aa55e6f7aaull}, // dins $2,$4,7,17
+        {0x584471c4, 0x55aa33c4d5e6f7aaull}, // dinsm $2,$4,7,40
+        {0x5844b9f4, 0x55e6f7aa55aa55aaull}, // dinsu $2,$4,39,17
+        {0x5844f824, 0x8123456789abcdefull}, // dextm $2,$4,0,64
     };
     const uint32_t transfers[] = {0x54802c3b, 0x5440243b}; // DMTC1 / DMFC1
     const uint32_t frame[] = {0x5fbdffe0, 0xd89d0010, 0xdc5d0010, 0x5fbd0020};
@@ -547,6 +554,8 @@ static void test_micromips64_legacy_arguments_and_frame(void)
                 unsigned half = forms[i].word >> (k < 2 ? 16 : 0);
                 bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
             }
+            uint64_t destination = 0x55aa55aa55aa55aaull;
+            OK(uc_reg_write(uc, UC_MIPS_REG_V0, &destination));
             OK(uc_mem_write(uc, code_start + 4 * i, bytes, sizeof(bytes)));
             OK(uc_emu_start(uc, (code_start + 4 * i) | 1,
                             code_start + 4 * (i + 1), 0, 1));
@@ -555,6 +564,24 @@ static void test_micromips64_legacy_arguments_and_frame(void)
             TEST_MSG("word %08x got %016llx expected %016llx", forms[i].word,
                      (unsigned long long)result,
                      (unsigned long long)forms[i].expected);
+        }
+        // Invalid extract/insert fields must fault even when rt is zero.
+        const uint32_t invalid[] = {0x5844ffe4, 0x584407cc, 0x584407f4};
+        for (unsigned i = 0; i < 6; ++i) {
+            uint32_t word = invalid[i / 2] & ~(i % 2 ? 31u << 21 : 0);
+            uint8_t bytes[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = word >> (k < 2 ? 16 : 0);
+                bytes[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            uint64_t sentinel = 0x55aa55aa55aa55aaull;
+            OK(uc_reg_write(uc, UC_MIPS_REG_V0, &sentinel));
+            OK(uc_mem_write(uc, code_start + 256 + i * 4, bytes, 4));
+            TEST_CHECK(uc_emu_start(uc, (code_start + 256 + i * 4) | 1,
+                                    code_start + 260 + i * 4, 0,
+                                    1) == UC_ERR_EXCEPTION);
+            OK(uc_reg_read(uc, UC_MIPS_REG_V0, &result));
+            TEST_CHECK(result == sentinel);
         }
         for (unsigned group = 0; group < 2; ++group) {
             const uint32_t *words = group ? frame : transfers;
