@@ -3,4 +3,5 @@
 #define TARGET_MIPS 1
 #define TARGET_NAME "mipsel"
 #define TARGET_MIPS 1
+#define TARGET_ALIGNED_ONLY 1
 #define CONFIG_SOFTMMU 1
