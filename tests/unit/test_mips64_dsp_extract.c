@@ -189,7 +189,118 @@ static void test_mips64_dsp_discarded_extraction(void)
     }
 }
 
+/* A bit-array signed integer model avoids host-width and two-word carry
+ * assumptions. Rounding adds the last discarded bit before range checking. */
+static uint64_t rounded_extract(uint64_t hi, uint64_t lo, unsigned shift,
+                                unsigned width, bool round, bool saturate,
+                                bool *overflow)
+{
+    unsigned bits[129];
+    unsigned sign = hi >> 63;
+    for (unsigned b = 0; b < 129; ++b) {
+        unsigned source = b + shift;
+        bits[b] = source >= 128 ? sign : extract_bits(hi, lo, source, 1);
+    }
+    unsigned carry = round && shift ? extract_bits(hi, lo, shift - 1, 1) : 0;
+    for (unsigned b = 0; b < 129 && carry; ++b) {
+        unsigned sum = bits[b] + carry;
+        bits[b] = sum & 1;
+        carry = sum >> 1;
+    }
+    *overflow = false;
+    for (unsigned b = width; b < 129; ++b)
+        *overflow |= bits[b] != bits[width - 1];
+    uint64_t result = 0;
+    for (unsigned b = 0; b < width; ++b)
+        result |= (uint64_t)bits[b] << b;
+    if (saturate && *overflow)
+        result = bits[128] ? UINT64_C(1) << (width - 1)
+                           : (UINT64_C(1) << (width - 1)) - 1;
+    if (width < 64 && (result & (UINT64_C(1) << (width - 1))))
+        result |= UINT64_MAX << width;
+    return result;
+}
+
+static void test_mips64_dsp_rounded_extract(void)
+{
+    const struct {
+        uint32_t minor;
+        unsigned width;
+        bool round, saturate;
+    } forms[] = {{0x13c, 32, true, false}, {0x1bc, 32, true, true},
+                 {0x3bc, 16, false, true}, {0x53c, 64, true, false},
+                 {0x5bc, 64, true, true}};
+    const uint64_t values[][2] = {
+        {0, 0}, {0, 1}, {0, 5}, {0, 0x7fff}, {0, 0x8000},
+        {UINT64_MAX, (uint64_t)-32768}, {UINT64_MAX, (uint64_t)-32769},
+        {UINT64_MAX, (uint64_t)-40000}, {UINT64_MAX, (uint64_t)-61440},
+        {0, 0x7fffffff}, {0, 0x80000000}, {0, 0xfffffffe}, {0, 0xffffffff},
+        {UINT64_MAX, (uint64_t)-2147483647 - 2},
+        {UINT64_MAX, (uint64_t)-4294967295 - 2},
+        {0, INT64_MAX}, {0, UINT64_C(0x8000000000000000)}, {0, UINT64_MAX},
+        {UINT64_MAX, 0}, {UINT64_MAX, UINT64_MAX}, {UINT64_MAX - 1, UINT64_MAX},
+        {1, 0}, {1, UINT64_MAX}, {INT64_MAX, UINT64_MAX},
+        {UINT64_C(0x8000000000000000), 0}};
+    for (unsigned little = 0; little < 2; ++little) {
+        uc_engine *uc;
+        OK(uc_open(UC_ARCH_MIPS,
+                   UC_MODE_MIPS64 | (little ? UC_MODE_LITTLE_ENDIAN
+                                            : UC_MODE_BIG_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MIPS64DSPR2));
+        OK(uc_mem_map(uc, 0x10000, 0x10000, UC_PROT_ALL));
+        const uint32_t enable[] = {0x40086000, 0x3c090100, 0x01094025,
+                                   0x40886000, 0xc0};
+        put_code(uc, 0x10000, enable, 5, little);
+        OK(uc_emu_start(uc, 0x10000, 0x10014, 0, 5));
+        unsigned row = 0;
+        for (unsigned op = 0; op < 5; ++op)
+            for (unsigned bank = 0; bank < 4; ++bank)
+                for (unsigned variant = 0; variant < 3; ++variant)
+                    for (unsigned count = 0; count < (variant ? 64 : 32); ++count) {
+                        unsigned rs = variant ? 2 : count;
+                        unsigned rt = variant == 2 ? 0 : 2;
+                        uint32_t word = 0x7c000000 | forms[op].minor |
+                                        (variant ? 0x40 : 0) | (bank << 11) |
+                                        (rs << 21) | (rt << 16);
+                        uint64_t pc = 0x10040 + 32 * (row++ % 1000);
+                        const uint32_t program[] = {
+                            0x00800011 | (bank << 11), 0x00a00013 | (bank << 11),
+                            0x7ce1fcf8, word, 0x7c3f4cb8,
+                            0x00005010 | (bank << 21), 0x00005812 | (bank << 21)};
+                        put_code(uc, pc, program, 7, little);
+                        OK(uc_ctl_remove_cache(uc, pc, pc + 28));
+                        for (unsigned v = 0; v < sizeof(values) / sizeof(values[0]); ++v) {
+                            uint64_t hi = values[v][0], lo = values[v][1];
+                            uint64_t amount = count | UINT64_C(0x100000000),
+                                     state = v & 1 ? 0x12b45678 : 0x12345678;
+                            uint64_t result, control, got_hi, got_lo;
+                            OK(uc_reg_write(uc, UC_MIPS_REG_4, &hi));
+                            OK(uc_reg_write(uc, UC_MIPS_REG_5, &lo));
+                            OK(uc_reg_write(uc, UC_MIPS_REG_2, &amount));
+                            OK(uc_reg_write(uc, UC_MIPS_REG_7, &state));
+                            OK(uc_emu_start(uc, pc, pc + 28, 0, 7));
+                            OK(uc_reg_read(uc, rt ? UC_MIPS_REG_2 : UC_MIPS_REG_0, &result));
+                            OK(uc_reg_read(uc, UC_MIPS_REG_9, &control));
+                            OK(uc_reg_read(uc, UC_MIPS_REG_10, &got_hi));
+                            OK(uc_reg_read(uc, UC_MIPS_REG_11, &got_lo));
+                            bool overflow;
+                            uint64_t expected = rounded_extract(
+                                hi, lo, count & (forms[op].width == 16 ? 31 : 63),
+                                forms[op].width, forms[op].round,
+                                forms[op].saturate, &overflow);
+                            TEST_CHECK(result == (rt ? expected : 0));
+                            TEST_CHECK(control == (state | (overflow ? 1u << 23 : 0)));
+                            TEST_CHECK(got_hi == hi && got_lo == lo);
+                            TEST_MSG("op=%u bank=%u little=%u variant=%u shift=%u vector=%u",
+                                     op, bank, little, variant, count, v);
+                        }
+                    }
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
+    {"test_mips64_dsp_rounded_extract", test_mips64_dsp_rounded_extract},
     {"test_mips64_dsp_extract_boundaries", test_mips64_dsp_extract_boundaries},
     {"test_mips_dsp_discarded_transfer_requires_enabled_dsp",
      test_mips_dsp_discarded_transfer_requires_enabled_dsp},

@@ -3240,8 +3240,10 @@ target_ulong helper_dextr_r_w(target_ulong ac, target_ulong shift,
 
     temp128 = temp[2] & 0x01;
 
-    if ((temp128 != 0 || temp[1] != 0) &&
-       (temp128 != 1 || temp[1] != ~0ull)) {
+    /* The rounded word's sign is bit 32 of the guard-bit representation. */
+    if ((temp128 != 0 || temp[1] != 0 || (temp[0] >> 32) != 0) &&
+        (temp128 != 1 || temp[1] != UINT64_MAX ||
+         (temp[0] >> 32) != UINT32_MAX)) {
         set_DSPControl_overflow_flag(1, 23, env);
     }
 
@@ -3267,8 +3269,9 @@ target_ulong helper_dextr_rs_w(target_ulong ac, target_ulong shift,
 
     temp128 = temp[2] & 0x01;
 
-    if ((temp128 != 0 || temp[1] != 0) &&
-       (temp128 != 1 || temp[1] != ~0ull)) {
+    if ((temp128 != 0 || temp[1] != 0 || (temp[0] >> 32) != 0) &&
+        (temp128 != 1 || temp[1] != UINT64_MAX ||
+         (temp[0] >> 32) != UINT32_MAX)) {
         if (temp128 == 0) {
             temp[0] = 0x0FFFFFFFF;
         } else {
@@ -3391,24 +3394,19 @@ target_ulong helper_extr_s_h(target_ulong ac, target_ulong shift,
 target_ulong helper_dextr_s_h(target_ulong ac, target_ulong shift,
                               CPUMIPSState *env)
 {
-    int64_t temp[2];
-    uint32_t temp127;
+    uint64_t temp[2];
 
     shift = shift & 0x1F;
 
-    mipsdsp_rashift_acc((uint64_t *)temp, ac, shift, env);
+    mipsdsp_rashift_acc(temp, ac, shift, env);
 
-    temp127 = (temp[1] >> 63) & 0x01;
-
-    if ((temp127 == 0) && (temp[1] > 0 || temp[0] > 32767)) {
-        temp[0] &= 0xFFFF0000;
-        temp[0] |= 0x00007FFF;
+    if (!(temp[1] >> 63) && (temp[1] != 0 || temp[0] > INT16_MAX)) {
+        temp[0] = INT16_MAX;
         set_DSPControl_overflow_flag(1, 23, env);
-    } else if ((temp127 == 1) &&
-            (temp[1] < 0xFFFFFFFFFFFFFFFFll
-             || temp[0] < 0xFFFFFFFFFFFF1000ll)) {
-        temp[0] &= 0xFFFF0000;
-        temp[0] |= 0x00008000;
+    } else if ((temp[1] >> 63) &&
+               (temp[1] != UINT64_MAX ||
+                temp[0] < UINT64_C(0xffffffffffff8000))) {
+        temp[0] = UINT64_C(0xffffffffffff8000);
         set_DSPControl_overflow_flag(1, 23, env);
     }
 
