@@ -359,9 +359,9 @@ static inline int32_t mipsdsp_mul_u16_u16(int32_t a, int32_t b)
 }
 
 #ifdef TARGET_MIPS64
-static inline int32_t mipsdsp_mul_i32_i32(int32_t a, int32_t b)
+static inline int64_t mipsdsp_mul_i32_i32(int32_t a, int32_t b)
 {
-    return a * b;
+    return (int64_t)a * (int64_t)b;
 }
 #endif
 
@@ -2830,10 +2830,10 @@ void helper_##name(target_ulong rs, target_ulong rt, uint32_t ac,    \
 {                                                                    \
     int32_t rs1, rs0;                                                \
     int32_t rt1, rt0;                                                \
-    int64_t tempBL[2], tempAL[2];                                    \
-    int64_t acc[2];                                                  \
-    int64_t temp[2];                                                 \
-    int64_t temp_sum;                                                \
+    uint64_t tempBL[2], tempAL[2];                                   \
+    uint64_t acc[2];                                                 \
+    uint64_t temp[2];                                                \
+    uint64_t temp_sum;                                               \
                                                                      \
     temp[0] = 0x00;                                                  \
     temp[1] = 0x00;                                                  \
@@ -2845,13 +2845,13 @@ void helper_##name(target_ulong rs, target_ulong rt, uint32_t ac,    \
         tempBL[0] = (int64_t)mipsdsp_##func(rs1, rt1);               \
         tempAL[0] = (int64_t)mipsdsp_##func(rs0, rt0);               \
                                                                      \
-        if (tempBL[0] >= 0) {                                        \
+        if (!(tempBL[0] >> 63)) {                                    \
             tempBL[1] = 0x0;                                         \
         } else {                                                     \
             tempBL[1] = ~0ull;                                       \
         }                                                            \
                                                                      \
-        if (tempAL[0] >= 0) {                                        \
+        if (!(tempAL[0] >> 63)) {                                    \
             tempAL[1] = 0x0;                                         \
         } else {                                                     \
             tempAL[1] = ~0ull;                                       \

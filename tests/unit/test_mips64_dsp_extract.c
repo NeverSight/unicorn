@@ -299,7 +299,82 @@ static void test_mips64_dsp_rounded_extract(void)
     }
 }
 
+/* Use sign/magnitude multiplication followed by a bit-serial 128-bit add.
+ * This does not depend on the helper's signed products or host carry rules. */
+static void word_product(uint64_t acc[2], uint32_t x, uint32_t y,
+                         bool signed_words, bool subtract)
+{
+    bool negative = signed_words && ((x ^ y) >> 31);
+    uint64_t a = signed_words && (x >> 31) ? 0u - x : x;
+    uint64_t b = signed_words && (y >> 31) ? 0u - y : y;
+    uint64_t product = a * b;
+    bool negate = negative != subtract;
+    unsigned carry = negate;
+    for (unsigned bit = 0; bit < 128; ++bit) {
+        unsigned p = bit < 64 ? (product >> bit) & 1 : 0;
+        unsigned old = (acc[bit / 64] >> (bit % 64)) & 1;
+        unsigned sum = old + (p ^ negate) + carry;
+        uint64_t mask = UINT64_C(1) << (bit % 64);
+        acc[bit / 64] = (acc[bit / 64] & ~mask) | ((uint64_t)(sum & 1) << (bit % 64));
+        carry = sum >> 1;
+    }
+}
+
+static void test_mips64_dsp_word_products(void)
+{
+    const uint32_t words[] = {0x7c850674, 0x7c8506f4, 0x7c850774, 0x7c8507f4};
+    const uint64_t inputs[] = {
+        0, 1, UINT64_C(0x10000), UINT64_C(0xffffffff), UINT64_MAX,
+        UINT64_C(0x0001000000000011), UINT64_C(0xaaaaaaaa00000005),
+        UINT64_C(0x8000000080000000), UINT64_C(0x800000007fffffff),
+        UINT64_C(0x7fffffff7fffffff), UINT64_C(0xffffffff00000001)};
+    const uint64_t seeds[][2] = {{0, 0}, {UINT64_MAX, 0},
+                                 {UINT64_MAX, UINT64_MAX}, {1, 0x1234}};
+    for (unsigned little = 0; little < 2; ++little) {
+        uc_engine *uc;
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                   (little ? UC_MODE_LITTLE_ENDIAN : UC_MODE_BIG_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MIPS64DSPR2));
+        OK(uc_mem_map(uc, 0x10000, 4096, UC_PROT_ALL));
+        const uint32_t enable[] = {0x40086000, 0x3c090100, 0x01094025,
+                                   0x40886000, 0xc0};
+        put_code(uc, 0x10000, enable, 5, little);
+        OK(uc_emu_start(uc, 0x10000, 0x10014, 0, 5));
+        for (unsigned op = 0; op < 4; ++op)
+            for (unsigned bank = 0; bank < 4; ++bank) {
+                uint64_t pc = 0x10100 + 64 * (4 * op + bank);
+                const uint32_t program[] = {
+                    0x00e00011 | (bank << 11), 0x01000013 | (bank << 11),
+                    0x7cc1fcf8, words[op] | (bank << 11),
+                    0x00004810 | (bank << 21), 0x00005012 | (bank << 21),
+                    0x7c3f5cb8};
+                put_code(uc, pc, program, 7, little);
+                for (unsigned x = 0; x < sizeof(inputs) / sizeof(*inputs); ++x)
+                    for (unsigned y = 0; y < sizeof(inputs) / sizeof(*inputs); ++y)
+                        for (unsigned seed = 0; seed < 4; ++seed) {
+                            uint64_t args[] = {inputs[x], inputs[y], 0x12345678,
+                                               seeds[seed][1], seeds[seed][0]};
+                            for (unsigned i = 0; i < 5; ++i)
+                                OK(uc_reg_write(uc, UC_MIPS_REG_4 + i, &args[i]));
+                            OK(uc_emu_start(uc, pc, pc + 28, 0, 7));
+                            uint64_t hi, lo, control, expected[] = {seeds[seed][0], seeds[seed][1]};
+                            word_product(expected, inputs[x], inputs[y], op < 2, op & 1);
+                            word_product(expected, inputs[x] >> 32, inputs[y] >> 32, op < 2, op & 1);
+                            OK(uc_reg_read(uc, UC_MIPS_REG_9, &hi));
+                            OK(uc_reg_read(uc, UC_MIPS_REG_10, &lo));
+                            OK(uc_reg_read(uc, UC_MIPS_REG_11, &control));
+                            TEST_CHECK(lo == expected[0] && hi == expected[1]);
+                            TEST_CHECK(control == 0x12345678);
+                            TEST_MSG("op=%u bank=%u little=%u x=%u y=%u seed=%u",
+                                     op, bank, little, x, y, seed);
+                        }
+            }
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {
+    {"test_mips64_dsp_word_products", test_mips64_dsp_word_products},
     {"test_mips64_dsp_rounded_extract", test_mips64_dsp_rounded_extract},
     {"test_mips64_dsp_extract_boundaries", test_mips64_dsp_extract_boundaries},
     {"test_mips_dsp_discarded_transfer_requires_enabled_dsp",
