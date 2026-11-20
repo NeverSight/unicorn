@@ -2943,9 +2943,13 @@ void helper_msa_mod_u_d(CPUMIPSState *env,
 
 static inline int64_t msa_asub_s_df(uint32_t df, int64_t arg1, int64_t arg2)
 {
-    /* signed compare */
-    return (arg1 < arg2) ?
-        (uint64_t)(arg2 - arg1) : (uint64_t)(arg1 - arg2);
+    /* Order the operands as signed values, but subtract modulo 2^64. */
+    uint64_t distance = arg1 < arg2 ?
+        (uint64_t)arg2 - (uint64_t)arg1 : (uint64_t)arg1 - (uint64_t)arg2;
+    int64_t result;
+
+    memcpy(&result, &distance, sizeof(result));
+    return result;
 }
 
 void helper_msa_asub_s_b(CPUMIPSState *env,
