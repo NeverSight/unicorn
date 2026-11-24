@@ -479,6 +479,61 @@ static void test_micromips64r6_pool32c_offsets(void)
     }
 }
 
+static bool map_mips_linked_page(uc_engine *uc, uint64_t addr,
+                                 uc_mem_type type, uc_tlb_entry *entry,
+                                 void *user_data)
+{
+    entry->paddr = *(const uint64_t *)user_data;
+    entry->perms = UC_PROT_READ | UC_PROT_WRITE;
+    return true;
+}
+
+// A linked load must reserve the physical address from the selected TLB.
+static void test_mips64_linked_virtual_mapping(void)
+{
+    const uint64_t vaddr = 0x100090018ull;
+    uint64_t phys_page = 0x230012000ull;
+    const uint8_t be[] = {0x60, 0x44, 0x70, 0x00, // lld $v0,0($a0)
+                          0x60, 0x64, 0xf0, 0x00, // scd $v1,0($a0)
+                          0x40, 0x26, 0x88, 0x00}; // classic dmfc0 $a2,$17
+    const uint8_t le[] = {0x44, 0x60, 0x00, 0x70,
+                          0x64, 0x60, 0x00, 0xf0,
+                          0x00, 0x88, 0x26, 0x40};
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        uc_hook hook;
+        uint64_t pc = code_start, status, actual = 0;
+        const uint64_t value = 0xababababababababull;
+        const uint64_t replacement = 0x8181818181818181ull;
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                   (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC));
+        OK(uc_ctl_tlb_mode(uc, UC_TLB_VIRTUAL));
+        OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        status |= 1u << 7; // KX, for 64-bit kernel virtual addresses
+        OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+        OK(uc_mem_map(uc, pc, 4096, UC_PROT_ALL));
+        OK(uc_mem_write(uc, pc, big ? be : le, sizeof(be)));
+        OK(uc_mem_map(uc, phys_page, 4096, UC_PROT_ALL));
+        OK(uc_mem_write(uc, phys_page + 0x18, &value, sizeof(value)));
+        OK(uc_hook_add(uc, &hook, UC_HOOK_TLB_FILL, map_mips_linked_page,
+                       &phys_page, vaddr - 0x18, vaddr - 0x18 + 4095));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &vaddr));
+        OK(uc_reg_write(uc, UC_MIPS_REG_V1, &replacement));
+        OK(uc_emu_start(uc, pc | 1, pc + 8, 0, 2));
+        OK(uc_reg_read(uc, UC_MIPS_REG_V0, &actual));
+        TEST_CHECK(actual == value);
+        OK(uc_reg_read(uc, UC_MIPS_REG_V1, &actual));
+        TEST_CHECK(actual == 1);
+        OK(uc_mem_read(uc, phys_page + 0x18, &actual, sizeof(actual)));
+        TEST_CHECK(actual == replacement);
+        OK(uc_emu_start(uc, pc + 8, pc + 12, 0, 1));
+        OK(uc_reg_read(uc, UC_MIPS_REG_A2, &actual));
+        TEST_CHECK(actual == phys_page + 0x18);
+        OK(uc_close(uc));
+    }
+}
+
 static void test_micromips_multiple_words(void)
 {
     // microMIPS32 Vol. II r5.03 LWM/SWM: each element occupies four bytes;
@@ -994,6 +1049,7 @@ TEST_LIST = {
     {"test_micromips64_legacy_arguments_and_frame",
      test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
+    {"test_mips64_linked_virtual_mapping", test_mips64_linked_virtual_mapping},
     {"test_micromips64r6_pool32c_offsets", test_micromips64r6_pool32c_offsets},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
