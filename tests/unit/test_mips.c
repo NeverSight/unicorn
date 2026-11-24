@@ -415,6 +415,51 @@ static void test_micromips64r6_doublewords(void)
     }
 }
 
+static void test_micromips64r6_bitfield_insert(void)
+{
+    const struct {
+        uint32_t word;
+        uint64_t value;
+    } cases[] = {
+        {0x5844b9cc, 0x55aa55aa55e6f7aaull}, // dins 7,17
+        {0x584471c4, 0x55aa33c4d5e6f7aaull}, // dinsm 7,40
+        {0x5844b9f4, 0x55e6f7aa55aa55aaull}, // dinsu 39,17
+        {0x5844f804, 0x8123456789abcdefull},  // dinsm 0,64
+        {0x5844fff4, 0xd5aa55aa55aa55aaull}, // dinsu 63,1
+        {0x584407c4, 0x55aa55abd5aa55aaull}, // dinsm 31,2
+    };
+    const uint32_t ambiguous[] = {
+        0x58444084, 0x58443904, 0x58440304, 0x58442d04, 0x58443704,
+    };
+    unsigned valid = sizeof(cases) / sizeof(cases[0]);
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        uint64_t source = 0x8123456789abcdefull;
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &source));
+        for (unsigned i = 0; i < valid + sizeof(ambiguous) / sizeof(ambiguous[0]); ++i) {
+            uint64_t pc = code_start + 4 * i;
+            uint64_t dest = 0x55aa55aa55aa55aaull;
+            uint32_t word = i < valid ? cases[i].word : ambiguous[i - valid];
+            uint8_t code[4];
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = word >> (k < 2 ? 16 : 0);
+                code[k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+            OK(uc_mem_write(uc, pc, code, sizeof(code)));
+            OK(uc_reg_write(uc, UC_MIPS_REG_V0, &dest));
+            uc_err err = uc_emu_start(uc, pc | 1, pc + 4, 0, 1);
+            TEST_CHECK(err == (i < valid ? UC_ERR_OK : UC_ERR_EXCEPTION));
+            OK(uc_reg_read(uc, UC_MIPS_REG_V0, &dest));
+            TEST_CHECK(dest == (i < valid ? cases[i].value : 0x55aa55aa55aa55aaull));
+        }
+        OK(uc_close(uc));
+    }
+}
+
 // Both R6 encodings share the PCREL minor, including the 64-bit loads.
 static void test_mips64r6_pcrel(void)
 {
@@ -1129,6 +1174,7 @@ TEST_LIST = {
     {"test_mips64r6_pcrel", test_mips64r6_pcrel},
     {"test_micromips64r6_pool32c_offsets", test_micromips64r6_pool32c_offsets},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
+    {"test_micromips64r6_bitfield_insert", test_micromips64r6_bitfield_insert},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},
