@@ -16299,6 +16299,71 @@ static void gen_micromips64_pool32sxf(DisasContext *ctx, int rs, int rt)
     gen_muldiv(ctx, opc, 0, rs, rt);
 }
 
+/* These POOL32S register fields are shared by legacy and R6 scalar ops. */
+static bool gen_micromips64_scalar(DisasContext *ctx, int rs, int rt, int rd)
+{
+    uint32_t opc;
+
+    switch (ctx->opcode & 0x7ff) {
+    case 0x110:
+        gen_arith(ctx, OPC_DADD, rd, rs, rt);
+        return true;
+    case 0x150:
+        gen_arith(ctx, OPC_DADDU, rd, rs, rt);
+        return true;
+    case 0x190:
+        gen_arith(ctx, OPC_DSUB, rd, rs, rt);
+        return true;
+    case 0x1d0:
+        gen_arith(ctx, OPC_DSUBU, rd, rs, rt);
+        return true;
+    case 0x000:
+        opc = OPC_DSLL;
+        break;
+    case 0x040:
+        opc = OPC_DSRL;
+        break;
+    case 0x080:
+        opc = OPC_DSRA;
+        break;
+    case 0x0c0:
+        opc = OPC_DROTR;
+        break;
+    case 0x008:
+        opc = OPC_DSLL32;
+        break;
+    case 0x048:
+        opc = OPC_DSRL32;
+        break;
+    case 0x088:
+        /* The R6.05 instruction diagram and opcode map disagree on DSRA32. */
+        if (ctx->insn_flags & ISA_MIPS32R6) {
+            return false;
+        }
+        opc = OPC_DSRA32;
+        break;
+    case 0x0c8:
+        opc = OPC_DROTR32;
+        break;
+    case 0x010:
+        gen_shift(ctx, OPC_DSLLV, rd, rs, rt);
+        return true;
+    case 0x050:
+        gen_shift(ctx, OPC_DSRLV, rd, rs, rt);
+        return true;
+    case 0x090:
+        gen_shift(ctx, OPC_DSRAV, rd, rs, rt);
+        return true;
+    case 0x0d0:
+        gen_shift(ctx, OPC_DROTRV, rd, rs, rt);
+        return true;
+    default:
+        return false;
+    }
+    gen_shift_imm(ctx, opc, rt, rs, rd);
+    return true;
+}
+
 /* Pre-R6 wide scalar instructions used by microMIPS64 function frames and
  * integer arguments to COP1. Keep the legacy pool separate from R6 opcodes. */
 static bool decode_micromips64_legacy(DisasContext *ctx)
@@ -16354,54 +16419,9 @@ static bool decode_micromips64_legacy(DisasContext *ctx)
         gen_bitops(ctx, opc, rt, rs, extract32(word, 6, 5), rd);
         return true;
     }
-    switch (word & 0x7ff) {
-    case 0x150:
-        gen_arith(ctx, OPC_DADDU, rd, rs, rt);
-        return true;
-    case 0x1d0:
-        gen_arith(ctx, OPC_DSUBU, rd, rs, rt);
-        return true;
-    case 0x000:
-        opc = OPC_DSLL;
-        break;
-    case 0x040:
-        opc = OPC_DSRL;
-        break;
-    case 0x080:
-        opc = OPC_DSRA;
-        break;
-    case 0x0c0:
-        opc = OPC_DROTR;
-        break;
-    case 0x008:
-        opc = OPC_DSLL32;
-        break;
-    case 0x048:
-        opc = OPC_DSRL32;
-        break;
-    case 0x088:
-        opc = OPC_DSRA32;
-        break;
-    case 0x0c8:
-        opc = OPC_DROTR32;
-        break;
-    case 0x010:
-        gen_shift(ctx, OPC_DSLLV, rd, rs, rt);
-        return true;
-    case 0x050:
-        gen_shift(ctx, OPC_DSRLV, rd, rs, rt);
-        return true;
-    case 0x090:
-        gen_shift(ctx, OPC_DSRAV, rd, rs, rt);
-        return true;
-    case 0x0d0:
-        gen_shift(ctx, OPC_DROTRV, rd, rs, rt);
-        return true;
-    default:
+    if (!gen_micromips64_scalar(ctx, rs, rt, rd)) {
         generate_exception_end(ctx, EXCP_RI);
-        return true;
     }
-    gen_shift_imm(ctx, opc, rt, rs, rd);
     return true;
 }
 
@@ -16473,14 +16493,8 @@ static bool decode_micromips64_r6(DisasContext *ctx)
         case 0x1d8:
             gen_r6_muldiv(ctx, R6_OPC_DMODU, rd, rs, rt);
             return true;
-        case 0x150:
-            gen_arith(ctx, OPC_DADDU, rd, rs, rt);
-            return true;
-        case 0x1d0:
-            gen_arith(ctx, OPC_DSUBU, rd, rs, rt);
-            return true;
-        case 0x008:
-            gen_shift_imm(ctx, OPC_DSLL32, rt, rs, rd);
+        }
+        if (gen_micromips64_scalar(ctx, rs, rt, rd)) {
             return true;
         }
         if ((word & 0xff) == 0x1c) {
@@ -17445,11 +17459,17 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
         case LWU:
             check_insn(ctx, ISA_MIPS3);
             check_mips_64(ctx);
+            /* LWU retains its signed 12-bit displacement in Release 6. */
+            offset = sextract32(ctx->opcode, 0, 12);
             mips32_op = OPC_LWU;
             goto do_ld_lr;
         case LLD:
             check_insn(ctx, ISA_MIPS3);
             check_mips_64(ctx);
+            if ((ctx->insn_flags & ISA_MIPS32R6) && (ctx->opcode & 0xe00)) {
+                generate_exception_end(ctx, EXCP_RI);
+                break;
+            }
             mips32_op = OPC_LLD;
             goto do_ld_lr;
 #endif
@@ -17469,6 +17489,10 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
         case SCD:
             check_insn(ctx, ISA_MIPS3);
             check_mips_64(ctx);
+            if ((ctx->insn_flags & ISA_MIPS32R6) && (ctx->opcode & 0xe00)) {
+                generate_exception_end(ctx, EXCP_RI);
+                break;
+            }
             gen_st_cond(ctx, rt, rs, offset, MO_TEQ, false);
             break;
 #endif

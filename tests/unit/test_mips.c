@@ -339,6 +339,8 @@ static void test_micromips64r6_doublewords(void)
         uint64_t a, b, expected;
         int result;
     } cases[] = {
+        {0x58a41110, 0x100000001ull, 3, 0x100000004ull, UC_MIPS_REG_V0}, // dadd
+        {0x58a41190, 0x100000001ull, 3, 0xfffffffeull, UC_MIPS_REG_V0},  // dsub
         {0x58a41018, 0x100000001ull, 3, 0x300000003ull, UC_MIPS_REG_V0},
         {0x58a41058, (uint64_t)-3, 3, UINT64_MAX, UC_MIPS_REG_V0},
         {0x58a410d8, UINT64_MAX, 2, 1, UC_MIPS_REG_V0},
@@ -347,6 +349,17 @@ static void test_micromips64r6_doublewords(void)
         {0x58445b3c, 0x100000001ull, 3, 31, UC_MIPS_REG_V0},
         {0x58447b3c, 0x0123456789abcdefull, 3, 0x23016745ab89efcdull, UC_MIPS_REG_V0},
         {0x5844fb3c, 0x0123456789abcdefull, 3, 0xcdef89ab45670123ull, UC_MIPS_REG_V0},
+        {0x58448000, 0x81fedcba98765432ull, 16, 0xdcba987654320000ull, UC_MIPS_REG_V0}, // dsll
+        {0x58440840, 0x81fedcba98765432ull, 1, 0x40ff6e5d4c3b2a19ull, UC_MIPS_REG_V0}, // dsrl
+        {0x58447880, 0x81fedcba98765432ull, 15, 0xffff03fdb97530ecull, UC_MIPS_REG_V0}, // dsra
+        {0x584448c0, 0x81fedcba98765432ull, 9, 0x1940ff6e5d4c3b2aull, UC_MIPS_REG_V0}, // drotr
+        {0x58444008, 0x81fedcba98765432ull, 8, 0x7654320000000000ull, UC_MIPS_REG_V0}, // dsll32
+        {0x58447848, 0x81fedcba98765432ull, 15, 0x00000000000103fdull, UC_MIPS_REG_V0}, // dsrl32
+        {0x5844b8c8, 0x81fedcba98765432ull, 23, 0xfdb97530eca86503ull, UC_MIPS_REG_V0}, // drotr32
+        {0x58851010, 0x81fedcba98765432ull, 67, 0x0ff6e5d4c3b2a190ull, UC_MIPS_REG_V0}, // dsllv
+        {0x58851050, 0x81fedcba98765432ull, 35, 0x00000000103fdb97ull, UC_MIPS_REG_V0}, // dsrlv
+        {0x58851090, 0x81fedcba98765432ull, 47, 0xffffffffffff03fdull, UC_MIPS_REG_V0}, // dsrav
+        {0x588510d0, 0x81fedcba98765432ull, 63, 0x03fdb97530eca865ull, UC_MIPS_REG_V0}, // drotrv
         {0x4224fffc, 0x123456789abcdef0ull, 3, 0x123456749abcdef0ull, UC_MIPS_REG_A0},
         {0x4204fffc, 0x123456789abcdef0ull, 3, 0x123056789abcdef0ull, UC_MIPS_REG_A0},
         {0x5c44fff8, 0x100000001ull, 3, 0xfffffff9ull, UC_MIPS_REG_V0},
@@ -395,6 +408,73 @@ static void test_micromips64r6_doublewords(void)
         TEST_CHECK(memcmp(data, actual, sizeof(data)) == 0);
         TEST_CHECK(uc_emu_start(uc, (code_start + 136) | 1,
                                code_start + 140, 0, 1) == UC_ERR_EXCEPTION);
+        OK(uc_close(uc));
+    }
+}
+
+// R6 shortens LLD/SCD to nine displacement bits. LWU keeps twelve.
+static void test_micromips64r6_pool32c_offsets(void)
+{
+    const uint32_t words[] = {
+        0x6044e400, // lwu $v0,1024($a0)
+        0x6044ef00, // lwu $v0,-256($a0)
+        0x604471f8, // lld $v0,-8($a0)
+        0x6064f1f8, // scd $v1,-8($a0)
+        0x60447200, // reserved LLD bits 11:9
+        0x6064f200, // reserved SCD bits 11:9
+        0x58440088, // unresolved R6 DSRA32
+        0x58a41110, // trapping DADD $v0,$a0,$a1
+        0x58a40190, // trapping DSUB $zero,$a0,$a1
+    };
+    for (unsigned big = 0; big < 2; ++big) {
+        uc_engine *uc;
+        uint8_t code[sizeof(words)];
+        uint64_t base = code_start + 2048, value = 0;
+        const uint64_t replacement = 0x0123456789abcdefull;
+        uint8_t data[8];
+        OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC));
+        OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+        for (unsigned i = 0; i < sizeof(words) / sizeof(words[0]); ++i) {
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned half = words[i] >> (k < 2 ? 16 : 0);
+                code[i * 4 + k] = half >> (8 * (big ? 1 - k % 2 : k % 2));
+            }
+        }
+        OK(uc_mem_write(uc, code_start, code, sizeof(code)));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &base));
+        memset(data, 0x81, 4);
+        OK(uc_mem_write(uc, base + 1024, data, 4));
+        memset(data, 0xce, 4);
+        OK(uc_mem_write(uc, base - 256, data, 4));
+        for (unsigned i = 0; i < 2; ++i) {
+            uint64_t pc = code_start + 4 * i;
+            OK(uc_emu_start(uc, pc | 1, pc + 4, 0, 1));
+            OK(uc_reg_read(uc, UC_MIPS_REG_V0, &value));
+            TEST_CHECK(value == (i ? 0xcecececeull : 0x81818181ull));
+        }
+        memset(data, 0x91, 8);
+        OK(uc_mem_write(uc, base - 8, data, sizeof(data)));
+        OK(uc_reg_write(uc, UC_MIPS_REG_V1, &replacement));
+        OK(uc_emu_start(uc, (code_start + 8) | 1, code_start + 16, 0, 2));
+        OK(uc_reg_read(uc, UC_MIPS_REG_V0, &value));
+        TEST_CHECK(value == 0x9191919191919191ull);
+        OK(uc_reg_read(uc, UC_MIPS_REG_V1, &value));
+        TEST_CHECK(value == 1);
+        OK(uc_mem_read(uc, base - 8, data, sizeof(data)));
+        for (unsigned k = 0; k < sizeof(data); ++k)
+            TEST_CHECK(data[k] == (uint8_t)(replacement >> (8 * (big ? 7-k : k))));
+        for (unsigned i = 4; i < sizeof(words) / sizeof(words[0]); ++i) {
+            uint64_t pc = code_start + 4 * i;
+            if (i >= 7) {
+                uint64_t a = i == 7 ? INT64_MAX : (uint64_t)INT64_MIN;
+                uint64_t b = 1;
+                OK(uc_reg_write(uc, UC_MIPS_REG_A0, &a));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A1, &b));
+            }
+            TEST_CHECK(uc_emu_start(uc, pc | 1, pc + 4, 0, 1) == UC_ERR_EXCEPTION);
+        }
         OK(uc_close(uc));
     }
 }
@@ -914,6 +994,7 @@ TEST_LIST = {
     {"test_micromips64_legacy_arguments_and_frame",
      test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
+    {"test_micromips64r6_pool32c_offsets", test_micromips64r6_pool32c_offsets},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
