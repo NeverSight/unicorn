@@ -16318,7 +16318,7 @@ static bool gen_micromips64_scalar(DisasContext *ctx, int rs, int rt, int rd)
         gen_shift(ctx, OPC_DROTRV, rd, rs, rt);
         return true;
     default:
-        /* Extraction uses bits 10..6 for the position in both revisions. */
+        /* Bit fields use bits 10..6 for the position in both revisions. */
         switch (ctx->opcode & 63) {
         case 0x2c:
             opc = OPC_DEXT;
@@ -16328,6 +16328,22 @@ static bool gen_micromips64_scalar(DisasContext *ctx, int rs, int rt, int rd)
             break;
         case 0x14:
             opc = OPC_DEXTU;
+            break;
+        case 0x0c:
+            opc = OPC_DINS;
+            break;
+        case 0x04:
+            /* In R6.05 these DINSM fields are shared with the DSRA32 and
+             * DLSA instruction diagrams. Keep the ambiguous words reserved. */
+            if ((ctx->insn_flags & ISA_MIPS32R6) &&
+                ((ctx->opcode & 0x7ff) == 0x084 ||
+                 (ctx->opcode & 0x1ff) == 0x104)) {
+                return false;
+            }
+            opc = OPC_DINSM;
+            break;
+        case 0x34:
+            opc = OPC_DINSU;
             break;
         default:
             return false;
@@ -16343,7 +16359,7 @@ static bool gen_micromips64_scalar(DisasContext *ctx, int rs, int rt, int rd)
  * integer arguments to COP1. Keep the legacy pool separate from R6 opcodes. */
 static bool decode_micromips64_legacy(DisasContext *ctx)
 {
-    uint32_t word = ctx->opcode, opc;
+    uint32_t word = ctx->opcode;
     unsigned major = word >> 26;
     int rt = extract32(word, 21, 5), rs = extract32(word, 16, 5);
     int rd = extract32(word, 11, 5);
@@ -16364,25 +16380,8 @@ static bool decode_micromips64_legacy(DisasContext *ctx)
         gen_st(ctx, OPC_SD, rt, rs, (int16_t)word);
         return true;
     }
-    switch (word & 63) {
-    case 0x3c:
+    if ((word & 63) == 0x3c) {
         gen_micromips64_pool32sxf(ctx, rs, rt);
-        return true;
-    case 0x0c:
-        opc = OPC_DINS;
-        break;
-    case 0x04:
-        opc = OPC_DINSM;
-        break;
-    case 0x34:
-        opc = OPC_DINSU;
-        break;
-    default:
-        opc = 0;
-        break;
-    }
-    if (opc) {
-        gen_bitops(ctx, opc, rt, rs, extract32(word, 6, 5), rd);
         return true;
     }
     if (!gen_micromips64_scalar(ctx, rs, rt, rd)) {
