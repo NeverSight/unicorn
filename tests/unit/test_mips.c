@@ -580,6 +580,67 @@ static void test_micromips_legacy_fpu(void)
     }
 }
 
+static void test_micromips64_legacy_hilo(void)
+{
+    // GNU as 2.42, microMIPS64r2. Every instruction reads a0, a1.
+    const struct {
+        uint32_t word;
+        uint64_t a, b, hi, lo;
+    } cases[] = {
+        {0x58a48b3c, (uint64_t)-3, 2, UINT64_MAX, (uint64_t)-6}, // dmult
+        {0x58a49b3c, (uint64_t)-3, 2, 1, (uint64_t)-6},          // dmultu
+        {0x58a4ab3c, 0xfffffffeffffffffull, 3, (uint64_t)-2,
+         (uint64_t)-1431655765},                                  // ddiv
+        {0x58a4bb3c, 0xfffffffeffffffffull, 3, 2,
+         0x55555554ffffffffull},                                  // ddivu
+    };
+    const struct {
+        uc_mode width;
+        int model;
+    } profiles[] = {
+        {UC_MODE_MIPS64, UC_CPU_MIPS64_MICROMIPS64R2_GENERIC},
+        {UC_MODE_MIPS64, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC},
+        {UC_MODE_MIPS32, UC_CPU_MIPS32_MICROMIPS32R2_GENERIC},
+    };
+    for (unsigned big = 0; big < 2; ++big) {
+        for (unsigned j = 0; j < sizeof(profiles) / sizeof(profiles[0]); ++j) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS, profiles[j].width |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+            OK(uc_ctl_set_cpu_model(uc, profiles[j].model));
+            OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+            for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                const uint32_t word = cases[i].word;
+                const uint8_t bytes[] = {
+                    (uint8_t)(word >> (big ? 24 : 16)),
+                    (uint8_t)(word >> (big ? 16 : 24)),
+                    (uint8_t)(word >> (big ? 8 : 0)),
+                    (uint8_t)(word >> (big ? 0 : 8)),
+                };
+                uint64_t site = code_start + 4 * i;
+                OK(uc_mem_write(uc, site, bytes, sizeof(bytes)));
+                if (profiles[j].width != UC_MODE_MIPS64 ||
+                    profiles[j].model != UC_CPU_MIPS64_MICROMIPS64R2_GENERIC) {
+                    TEST_CHECK(uc_emu_start(uc, site | 1, site + 4, 0, 1) ==
+                               UC_ERR_EXCEPTION);
+                    continue;
+                }
+                uint64_t hi = 0, lo = 0;
+                OK(uc_reg_write(uc, UC_MIPS_REG_A0, &cases[i].a));
+                OK(uc_reg_write(uc, UC_MIPS_REG_A1, &cases[i].b));
+                OK(uc_emu_start(uc, site | 1, site + 4, 0, 1));
+                OK(uc_reg_read(uc, UC_MIPS_REG_HI, &hi));
+                OK(uc_reg_read(uc, UC_MIPS_REG_LO, &lo));
+                TEST_CHECK(hi == cases[i].hi);
+                TEST_CHECK(lo == cases[i].lo);
+                TEST_MSG("word %08x HI %016llx LO %016llx", word,
+                         (unsigned long long)hi, (unsigned long long)lo);
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
 static void test_micromips64_legacy_arguments_and_frame(void)
 {
     // GNU as 2.47, microMIPS64r2, independently checked in both byte orders.
@@ -609,6 +670,10 @@ static void test_micromips64_legacy_arguments_and_frame(void)
         {0x584471c4, 0x55aa33c4d5e6f7aaull}, // dinsm $2,$4,7,40
         {0x5844b9f4, 0x55e6f7aa55aa55aaull}, // dinsu $2,$4,39,17
         {0x5844f824, 0x8123456789abcdefull}, // dextm $2,$4,0,64
+        {0x58445b3c, 0},                      // dclz $2,$4
+        {0x58444b3c, 1},                      // dclo $2,$4
+        {0x58447b3c, 0x23816745ab89efcdull}, // dsbh $2,$4
+        {0x5844fb3c, 0xcdef89ab45678123ull}, // dshd $2,$4
     };
     const uint32_t transfers[] = {0x54802c3b, 0x5440243b}; // DMTC1 / DMFC1
     const uint32_t frame[] = {0x5fbdffe0, 0xd89d0010, 0xdc5d0010, 0x5fbd0020};
@@ -643,9 +708,12 @@ static void test_micromips64_legacy_arguments_and_frame(void)
                      (unsigned long long)result,
                      (unsigned long long)forms[i].expected);
         }
-        // Invalid extract/insert fields must fault even when rt is zero.
-        const uint32_t invalid[] = {0x5844ffe4, 0x584407cc, 0x584407f4};
-        for (unsigned i = 0; i < 6; ++i) {
+        // Invalid bit fields, R6 DBITSWAP and a reserved POOL32Sxf minor
+        // must fault even when rt is zero.
+        const uint32_t invalid[] = {
+            0x5844ffe4, 0x584407cc, 0x584407f4, 0x58440b3c, 0x5844cb3c,
+        };
+        for (unsigned i = 0; i < 2 * sizeof(invalid) / sizeof(invalid[0]); ++i) {
             uint32_t word = invalid[i / 2] & ~(i % 2 ? 31u << 21 : 0);
             uint8_t bytes[4];
             for (unsigned k = 0; k < 4; ++k) {
@@ -842,6 +910,7 @@ TEST_LIST = {
     {"test_mips_fp_memory_alignment", test_mips_fp_memory_alignment},
     {"test_mips_r6_fp_unaligned_memory", test_mips_r6_fp_unaligned_memory},
     {"test_micromips_multiple_words", test_micromips_multiple_words},
+    {"test_micromips64_legacy_hilo", test_micromips64_legacy_hilo},
     {"test_micromips64_legacy_arguments_and_frame",
      test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
