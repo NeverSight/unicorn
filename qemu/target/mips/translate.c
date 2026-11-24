@@ -16256,6 +16256,49 @@ static void gen_pool32fxf(DisasContext *ctx, int rt, int rs)
 }
 
 #if defined(TARGET_MIPS64)
+/* microMIPS64 Volume II-B, POOL32Sxf. The unary operations retain their
+ * register fields across revisions. R6 replaces the HI/LO arithmetic. */
+static void gen_micromips64_pool32sxf(DisasContext *ctx, int rs, int rt)
+{
+    uint32_t opc;
+
+    switch (ctx->opcode & 0xffff) {
+    case 0x5b3c:
+        gen_cl(ctx, OPC_DCLZ, rt, rs);
+        return;
+    case 0x4b3c:
+        gen_cl(ctx, OPC_DCLO, rt, rs);
+        return;
+    case 0x7b3c:
+        gen_bshfl(ctx, OPC_DSBH, rs, rt);
+        return;
+    case 0xfb3c:
+        gen_bshfl(ctx, OPC_DSHD, rs, rt);
+        return;
+    case 0x0b3c:
+        check_insn(ctx, ISA_MIPS32R6);
+        gen_bitswap(ctx, OPC_DBITSWAP, rs, rt);
+        return;
+    case 0x8b3c:
+        opc = OPC_DMULT;
+        break;
+    case 0x9b3c:
+        opc = OPC_DMULTU;
+        break;
+    case 0xab3c:
+        opc = OPC_DDIV;
+        break;
+    case 0xbb3c:
+        opc = OPC_DDIVU;
+        break;
+    default:
+        generate_exception_end(ctx, EXCP_RI);
+        return;
+    }
+    check_insn_opc_removed(ctx, ISA_MIPS32R6);
+    gen_muldiv(ctx, opc, 0, rs, rt);
+}
+
 /* Pre-R6 wide scalar instructions used by microMIPS64 function frames and
  * integer arguments to COP1. Keep the legacy pool separate from R6 opcodes. */
 static bool decode_micromips64_legacy(DisasContext *ctx)
@@ -16282,6 +16325,9 @@ static bool decode_micromips64_legacy(DisasContext *ctx)
         return true;
     }
     switch (word & 63) {
+    case 0x3c:
+        gen_micromips64_pool32sxf(ctx, rs, rt);
+        return true;
     case 0x2c:
         opc = OPC_DEXT;
         break;
@@ -16441,21 +16487,8 @@ static bool decode_micromips64_r6(DisasContext *ctx)
             gen_align(ctx, 64, rd, rs, rt, extract32(word, 8, 3));
             return true;
         }
-        switch (word & 0xffff) {
-        case 0x5b3c:
-            gen_cl(ctx, OPC_DCLZ, rt, rs);
-            return true;
-        case 0x4b3c:
-            gen_cl(ctx, OPC_DCLO, rt, rs);
-            return true;
-        case 0x0b3c:
-            gen_bitswap(ctx, OPC_DBITSWAP, rs, rt);
-            return true;
-        case 0x7b3c:
-            gen_bshfl(ctx, OPC_DSBH, rs, rt);
-            return true;
-        case 0xfb3c:
-            gen_bshfl(ctx, OPC_DSHD, rs, rt);
+        if ((word & 63) == 0x3c) {
+            gen_micromips64_pool32sxf(ctx, rs, rt);
             return true;
         }
         generate_exception_end(ctx, EXCP_RI);
