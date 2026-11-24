@@ -346,6 +346,9 @@ static void test_micromips64r6_doublewords(void)
         {0x58a410d8, UINT64_MAX, 2, 1, UC_MIPS_REG_V0},
         {0x58a41118, (uint64_t)-55, 3, (uint64_t)-18, UC_MIPS_REG_V0},
         {0x58a41158, (uint64_t)-55, 3, UINT64_MAX, UC_MIPS_REG_V0},
+        {0x584449ec, 0x81fedcba98765432ull, 0, 0xa8, UC_MIPS_REG_V0}, // dext 7,10
+        {0x58441924, 0x81fedcba98765432ull, 0, 0xba9876543ull, UC_MIPS_REG_V0}, // dextm 4,36
+        {0x584460d4, 0x81fedcba98765432ull, 0, 0x1b97, UC_MIPS_REG_V0}, // dextu 35,13
         {0x58445b3c, 0x100000001ull, 3, 31, UC_MIPS_REG_V0},
         {0x58447b3c, 0x0123456789abcdefull, 3, 0x23016745ab89efcdull, UC_MIPS_REG_V0},
         {0x5844fb3c, 0x0123456789abcdefull, 3, 0xcdef89ab45670123ull, UC_MIPS_REG_V0},
@@ -409,6 +412,79 @@ static void test_micromips64r6_doublewords(void)
         TEST_CHECK(uc_emu_start(uc, (code_start + 136) | 1,
                                code_start + 140, 0, 1) == UC_ERR_EXCEPTION);
         OK(uc_close(uc));
+    }
+}
+
+// Both R6 encodings share the PCREL minor, including the 64-bit loads.
+static void test_mips64r6_pcrel(void)
+{
+    const uint64_t base = UINT64_C(0x100200000), data = base + 0x200;
+    const uint64_t value = UINT64_C(0x8765432187654321);
+    const unsigned minors[] = {0, 8, 16, 24, 30, 31, 28, 29};
+    for (unsigned micro = 0; micro < 2; ++micro) {
+        for (unsigned big = 0; big < 2; ++big) {
+            uc_engine *uc;
+            uint64_t status = 0;
+            uint8_t bytes[8];
+            OK(uc_open(UC_ARCH_MIPS, UC_MODE_MIPS64 |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+            OK(uc_ctl_set_cpu_model(uc, micro ? UC_CPU_MIPS64_MICROMIPS64R6_GENERIC
+                                              : UC_CPU_MIPS64_I6400));
+            OK(uc_ctl_tlb_mode(uc, UC_TLB_VIRTUAL));
+            OK(uc_reg_read(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            status |= 0x80; // KX enables 64-bit virtual addresses.
+            OK(uc_reg_write(uc, UC_MIPS_REG_CP0_STATUS, &status));
+            OK(uc_mem_map(uc, base, 4096, UC_PROT_ALL));
+            for (unsigned k = 0; k < 8; ++k)
+                bytes[k] = value >> (8 * (big ? 7 - k : k));
+            OK(uc_mem_write(uc, data, bytes, 8));
+            for (unsigned i = 0; i < sizeof(minors) / sizeof(minors[0]); ++i) {
+                uint64_t pc = base + 0x400 + 8 * i + 2 * micro;
+                uint64_t expected = 0, observed = 0;
+                uint32_t word = (micro ? 0x78400000u : 0xec400000u) |
+                                (minors[i] << 16);
+                switch (minors[i]) {
+                case 0: // ADDIUPC
+                    word |= 0x7ffff;
+                    expected = (pc & ~UINT64_C(3)) - 4;
+                    break;
+                case 8: // LWPC
+                case 16: // LWUPC
+                    word |= ((data - (pc & ~UINT64_C(3))) >> 2) & 0x7ffff;
+                    expected = minors[i] == 8 ? UINT64_C(0xffffffff87654321)
+                                              : UINT64_C(0x87654321);
+                    break;
+                case 24: // LDPC
+                    word |= ((data - (pc & ~UINT64_C(7))) >> 3) & 0x3ffff;
+                    expected = value;
+                    break;
+                case 30: // AUIPC
+                case 31: // ALUIPC
+                    word |= 0xffff;
+                    expected = pc - 65536;
+                    if (minors[i] == 31)
+                        expected &= ~UINT64_C(0xffff);
+                    break;
+                }
+                for (unsigned k = 0; k < 4; ++k) {
+                    unsigned byte = big ? 3 - k : k;
+                    if (micro && !big)
+                        byte ^= 2; // first halfword contains the major opcode
+                    bytes[k] = word >> (8 * byte);
+                }
+                OK(uc_mem_write(uc, pc, bytes, 4));
+                uc_err error = uc_emu_start(uc, pc | micro, pc + 4, 0, 1);
+                if (minors[i] == 28 || minors[i] == 29) {
+                    TEST_CHECK(error == UC_ERR_EXCEPTION);
+                } else {
+                    OK(error);
+                    OK(uc_reg_read(uc, UC_MIPS_REG_V0, &observed));
+                    TEST_CHECK(observed == expected);
+                    TEST_MSG("micro=%u big=%u minor=%u", micro, big, minors[i]);
+                }
+            }
+            OK(uc_close(uc));
+        }
     }
 }
 
@@ -1050,6 +1126,7 @@ TEST_LIST = {
      test_micromips64_legacy_arguments_and_frame},
     {"test_micromips_legacy_fpu", test_micromips_legacy_fpu},
     {"test_mips64_linked_virtual_mapping", test_mips64_linked_virtual_mapping},
+    {"test_mips64r6_pcrel", test_mips64r6_pcrel},
     {"test_micromips64r6_pool32c_offsets", test_micromips64r6_pool32c_offsets},
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_generic", test_micromips64r6_generic},

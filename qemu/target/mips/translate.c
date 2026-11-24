@@ -146,24 +146,16 @@ enum {
     OPC_PCREL    = (0x3B << 26),
 };
 
-/* PC-relative address computation / loads  */
-#define MASK_OPC_PCREL_TOP2BITS(op) (MASK_OP_MAJOR(op) | (op & (3 << 19)))
-#define MASK_OPC_PCREL_TOP5BITS(op) (MASK_OP_MAJOR(op) | (op & (0x1f << 16)))
+/* Classic and microMIPS R6 share the PCREL minor opcode in bits 20..16. */
 enum {
-    /* Instructions determined by bits 19 and 20 */
-    OPC_ADDIUPC = OPC_PCREL | (0 << 19),
-    R6_OPC_LWPC = OPC_PCREL | (1 << 19),
-    OPC_LWUPC   = OPC_PCREL | (2 << 19),
-
-    /* Instructions determined by bits 16 ... 20 */
-    OPC_AUIPC   = OPC_PCREL | (0x1e << 16),
-    OPC_ALUIPC  = OPC_PCREL | (0x1f << 16),
-
-    /* Other */
-    R6_OPC_LDPC = OPC_PCREL | (6 << 18),
+    PCREL_ADDIUPC = 0x00,
+    PCREL_LWPC    = 0x08,
+    PCREL_LWUPC   = 0x10,
+    PCREL_LDPC    = 0x18,
+    PCREL_AUIPC   = 0x1e,
+    PCREL_ALUIPC  = 0x1f,
 };
 
-/* MIPS special opcodes */
 #define MASK_SPECIAL(op)            (MASK_OP_MAJOR(op) | (op & 0x3F))
 
 enum {
@@ -4512,68 +4504,58 @@ static inline void gen_r6_ld(TCGContext *tcg_ctx, target_long addr, int reg, int
     tcg_temp_free(tcg_ctx, t0);
 }
 
-static inline void gen_pcrel(DisasContext *ctx, int opc, target_ulong pc,
-                             int rs)
+static void gen_pcrel(DisasContext *ctx, int rt)
 {
     TCGContext *tcg_ctx = ctx->uc->tcg_ctx;
-    target_long offset;
-    target_long addr;
+    target_ulong pc = ctx->base.pc_next;
+    unsigned minor = extract32(ctx->opcode, 16, 5);
+    target_long offset, addr;
 
-    switch (MASK_OPC_PCREL_TOP2BITS(opc)) {
-    case OPC_ADDIUPC:
-        if (rs != 0) {
+    switch (minor & 0x18) {
+    case PCREL_ADDIUPC:
+        if (rt) {
             offset = sextract32(ctx->opcode << 2, 0, 21);
-            addr = addr_add(ctx, pc, offset);
-            tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rs], addr);
+            addr = addr_add(ctx, pc & ~3, offset);
+            tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rt], addr);
         }
-        break;
-    case R6_OPC_LWPC:
+        return;
+    case PCREL_LWPC:
         offset = sextract32(ctx->opcode << 2, 0, 21);
-        addr = addr_add(ctx, pc, offset);
-        gen_r6_ld(tcg_ctx, addr, rs, ctx->mem_idx, MO_TESL);
-        break;
+        addr = addr_add(ctx, pc & ~3, offset);
+        gen_r6_ld(tcg_ctx, addr, rt, ctx->mem_idx, MO_TESL);
+        return;
 #if defined(TARGET_MIPS64)
-    case OPC_LWUPC:
+    case PCREL_LWUPC:
         check_mips_64(ctx);
         offset = sextract32(ctx->opcode << 2, 0, 21);
-        addr = addr_add(ctx, pc, offset);
-        gen_r6_ld(tcg_ctx, addr, rs, ctx->mem_idx, MO_TEUL);
-        break;
+        addr = addr_add(ctx, pc & ~3, offset);
+        gen_r6_ld(tcg_ctx, addr, rt, ctx->mem_idx, MO_TEUL);
+        return;
 #endif
-    default:
-        switch (MASK_OPC_PCREL_TOP5BITS(opc)) {
-        case OPC_AUIPC:
-            if (rs != 0) {
-                offset = sextract32(ctx->opcode, 0, 16) << 16;
-                addr = addr_add(ctx, pc, offset);
-                tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rs], addr);
-            }
-            break;
-        case OPC_ALUIPC:
-            if (rs != 0) {
-                offset = sextract32(ctx->opcode, 0, 16) << 16;
-                addr = ~0xFFFF & addr_add(ctx, pc, offset);
-                tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rs], addr);
-            }
-            break;
-#if defined(TARGET_MIPS64)
-        case R6_OPC_LDPC: /* bits 16 and 17 are part of immediate */
-        case R6_OPC_LDPC + (1 << 16):
-        case R6_OPC_LDPC + (2 << 16):
-        case R6_OPC_LDPC + (3 << 16):
-            check_mips_64(ctx);
-            offset = sextract32(ctx->opcode << 3, 0, 21);
-            addr = addr_add(ctx, (pc & ~0x7), offset);
-            gen_r6_ld(tcg_ctx, addr, rs, ctx->mem_idx, MO_TEQ);
-            break;
-#endif
-        default:
-            MIPS_INVAL("OPC_PCREL");
-            generate_exception_end(ctx, EXCP_RI);
-            break;
-        }
-        break;
     }
+
+    if (minor == PCREL_AUIPC || minor == PCREL_ALUIPC) {
+        if (rt) {
+            offset = (int32_t)(ctx->opcode << 16);
+            addr = addr_add(ctx, pc, offset);
+            if (minor == PCREL_ALUIPC) {
+                addr &= ~(target_ulong)0xffff;
+            }
+            tcg_gen_movi_tl(tcg_ctx, tcg_ctx->cpu_gpr[rt], addr);
+        }
+        return;
+    }
+#if defined(TARGET_MIPS64)
+    if ((minor & 0x1c) == PCREL_LDPC) {
+        check_mips_64(ctx);
+        offset = sextract32(ctx->opcode << 3, 0, 21);
+        addr = addr_add(ctx, pc & ~7, offset);
+        gen_r6_ld(tcg_ctx, addr, rt, ctx->mem_idx, MO_TEQ);
+        return;
+    }
+#endif
+    MIPS_INVAL("OPC_PCREL");
+    generate_exception_end(ctx, EXCP_RI);
 }
 
 static void gen_r6_muldiv(DisasContext *ctx, int opc, int rd, int rs, int rt)
@@ -14667,28 +14649,6 @@ enum {
     LW32 = 0x3f
 };
 
-/* PCREL Instructions perform PC-Relative address calculation. bits 20..16 */
-enum {
-    ADDIUPC_00 = 0x00,
-    ADDIUPC_01 = 0x01,
-    ADDIUPC_02 = 0x02,
-    ADDIUPC_03 = 0x03,
-    ADDIUPC_04 = 0x04,
-    ADDIUPC_05 = 0x05,
-    ADDIUPC_06 = 0x06,
-    ADDIUPC_07 = 0x07,
-    AUIPC = 0x1e,
-    ALUIPC = 0x1f,
-    LWPC_08 = 0x08,
-    LWPC_09 = 0x09,
-    LWPC_0A = 0x0A,
-    LWPC_0B = 0x0B,
-    LWPC_0C = 0x0C,
-    LWPC_0D = 0x0D,
-    LWPC_0E = 0x0E,
-    LWPC_0F = 0x0F,
-};
-
 /* POOL32A encoding of minor opcode field */
 
 enum {
@@ -16358,7 +16318,22 @@ static bool gen_micromips64_scalar(DisasContext *ctx, int rs, int rt, int rd)
         gen_shift(ctx, OPC_DROTRV, rd, rs, rt);
         return true;
     default:
-        return false;
+        /* Extraction uses bits 10..6 for the position in both revisions. */
+        switch (ctx->opcode & 63) {
+        case 0x2c:
+            opc = OPC_DEXT;
+            break;
+        case 0x24:
+            opc = OPC_DEXTM;
+            break;
+        case 0x14:
+            opc = OPC_DEXTU;
+            break;
+        default:
+            return false;
+        }
+        gen_bitops(ctx, opc, rt, rs, extract32(ctx->opcode, 6, 5), rd);
+        return true;
     }
     gen_shift_imm(ctx, opc, rt, rs, rd);
     return true;
@@ -16393,15 +16368,6 @@ static bool decode_micromips64_legacy(DisasContext *ctx)
     case 0x3c:
         gen_micromips64_pool32sxf(ctx, rs, rt);
         return true;
-    case 0x2c:
-        opc = OPC_DEXT;
-        break;
-    case 0x24:
-        opc = OPC_DEXTM;
-        break;
-    case 0x14:
-        opc = OPC_DEXTU;
-        break;
     case 0x0c:
         opc = OPC_DINS;
         break;
@@ -17732,40 +17698,9 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
     do_cop1:
         gen_cop1_ldst(ctx, mips32_op, rt, rs, imm);
         break;
-    case ADDIUPC: /* PCREL: ADDIUPC, AUIPC, ALUIPC, LWPC */
+    case ADDIUPC:
         if (ctx->insn_flags & ISA_MIPS32R6) {
-            /* PCREL: ADDIUPC, AUIPC, ALUIPC, LWPC */
-            switch ((ctx->opcode >> 16) & 0x1f) {
-            case ADDIUPC_00:
-            case ADDIUPC_01:
-            case ADDIUPC_02:
-            case ADDIUPC_03:
-            case ADDIUPC_04:
-            case ADDIUPC_05:
-            case ADDIUPC_06:
-            case ADDIUPC_07:
-                gen_pcrel(ctx, OPC_ADDIUPC, ctx->base.pc_next & ~0x3, rt);
-                break;
-            case AUIPC:
-                gen_pcrel(ctx, OPC_AUIPC, ctx->base.pc_next, rt);
-                break;
-            case ALUIPC:
-                gen_pcrel(ctx, OPC_ALUIPC, ctx->base.pc_next, rt);
-                break;
-            case LWPC_08:
-            case LWPC_09:
-            case LWPC_0A:
-            case LWPC_0B:
-            case LWPC_0C:
-            case LWPC_0D:
-            case LWPC_0E:
-            case LWPC_0F:
-                gen_pcrel(ctx, R6_OPC_LWPC, ctx->base.pc_next & ~0x3, rt);
-                break;
-            default:
-                generate_exception(ctx, EXCP_RI);
-                break;
-            }
+            gen_pcrel(ctx, rt);
         } else {
             /* ADDIUPC */
             int reg = mmreg(ZIMM(ctx->opcode, 23, 3));
@@ -31115,7 +31050,7 @@ static void decode_opc(CPUMIPSState *env, DisasContext *ctx)
         break;
     case OPC_PCREL:
         check_insn(ctx, ISA_MIPS32R6);
-        gen_pcrel(ctx, ctx->opcode, ctx->base.pc_next, rs);
+        gen_pcrel(ctx, rs);
         break;
     default:            /* Invalid */
         MIPS_INVAL("major opcode");
