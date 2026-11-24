@@ -16663,13 +16663,16 @@ static void decode_micromips32_opc(CPUMIPSState *env, DisasContext *ctx)
             gen_bitops(ctx, OPC_INS, rt, rs, rr, rd);
             return;
         case LSA:
-            check_insn(ctx, ISA_MIPS32R6);
-            gen_lsa(ctx, OPC_LSA, rd, rs, rt,
-                    extract32(ctx->opcode, 9, 2));
-            break;
         case ALIGN:
+            if (extract32(ctx->opcode, 6, 3) != 0) {
+                goto pool32a_invalid;
+            }
             check_insn(ctx, ISA_MIPS32R6);
-            gen_align(ctx, 32, rd, rs, rt, extract32(ctx->opcode, 9, 2));
+            if (minor == LSA) {
+                gen_lsa(ctx, OPC_LSA, rd, rs, rt, extract32(ctx->opcode, 9, 2));
+            } else {
+                gen_align(ctx, 32, rd, rs, rt, extract32(ctx->opcode, 9, 2));
+            }
             break;
         case EXT:
             gen_bitops(ctx, OPC_EXT, rt, rs, rr, rd);

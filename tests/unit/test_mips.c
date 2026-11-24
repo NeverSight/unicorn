@@ -278,6 +278,58 @@ static void test_mips_dsp_maq_full_accumulator(void)
     }
 }
 
+static void test_micromips_r6_lsa_align_encodings(void)
+{
+    static const struct {
+        int mode, cpu;
+        bool r6;
+    } profiles[] = {
+        {UC_MODE_MIPS32, UC_CPU_MIPS32_MIPS32R6_GENERIC, true},
+        {UC_MODE_MIPS64, UC_CPU_MIPS64_MICROMIPS64R6_GENERIC, true},
+        {UC_MODE_MIPS32, UC_CPU_MIPS32_M14KC, false},
+        {UC_MODE_MIPS64, UC_CPU_MIPS64_MICROMIPS64R2_GENERIC, false},
+    };
+    // Both forms read and write v0, with a shift field of 1.
+    static const struct {
+        uint32_t word, result;
+    } forms[] = {
+        {0x0042120f, 0x050a0f14}, // LSA shifts by two, then adds.
+        {0x0042121f, 0x02030401}, // ALIGN selects a one-byte offset.
+    };
+    const uint32_t initial = 0x01020304;
+
+    for (unsigned p = 0; p < sizeof(profiles) / sizeof(profiles[0]); ++p) {
+        bool wide = profiles[p].mode == UC_MODE_MIPS64;
+        for (unsigned big = 0; big < 2; ++big) {
+            uc_engine *uc;
+            OK(uc_open(UC_ARCH_MIPS, profiles[p].mode |
+                       (big ? UC_MODE_BIG_ENDIAN : UC_MODE_LITTLE_ENDIAN), &uc));
+            OK(uc_ctl_set_cpu_model(uc, profiles[p].cpu));
+            OK(uc_mem_map(uc, code_start, 4096, UC_PROT_ALL));
+            for (unsigned i = 0; i < sizeof(forms) / sizeof(forms[0]); ++i) {
+                for (unsigned reserved = 0; reserved < 8; ++reserved) {
+                    uint64_t pc = code_start + 4 * (8 * i + reserved);
+                    uint32_t word = forms[i].word | (reserved << 6);
+                    uint32_t code = big ? BEINT32(word) :
+                        LEINT32((word << 16) | (word >> 16));
+                    uint32_t v32 = initial;
+                    uint64_t v64 = initial;
+                    void *v0 = wide ? (void *)&v64 : (void *)&v32;
+                    bool valid = profiles[p].r6 && reserved == 0;
+                    OK(uc_mem_write(uc, pc, &code, sizeof(code)));
+                    OK(uc_reg_write(uc, UC_MIPS_REG_V0, v0));
+                    uc_err err = uc_emu_start(uc, pc | 1, pc + 4, 0, 1);
+                    TEST_CHECK(err == (valid ? UC_ERR_OK : UC_ERR_EXCEPTION));
+                    OK(uc_reg_read(uc, UC_MIPS_REG_V0, v0));
+                    TEST_CHECK((wide ? v64 : v32) ==
+                               (valid ? forms[i].result : initial));
+                }
+            }
+            OK(uc_close(uc));
+        }
+    }
+}
+
 static void test_micromips64r6_generic(void)
 {
     // Physical halfword order is independent of host and target byte order.
@@ -1176,6 +1228,7 @@ TEST_LIST = {
     {"test_micromips64r6_doublewords", test_micromips64r6_doublewords},
     {"test_micromips64r6_bitfield_insert", test_micromips64r6_bitfield_insert},
     {"test_micromips64r6_generic", test_micromips64r6_generic},
+    {"test_micromips_r6_lsa_align_encodings", test_micromips_r6_lsa_align_encodings},
     {"test_mips_dsp_maq_full_accumulator", test_mips_dsp_maq_full_accumulator},
     {"test_mips_stop_at_branch", test_mips_stop_at_branch},
     {"test_mips_stop_at_delay_slot", test_mips_stop_at_delay_slot},
