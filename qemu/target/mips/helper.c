@@ -963,23 +963,13 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 }
 
 hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
-                                  int rw)
+                                  MMUAccessType access, int mmu_idx,
+                                  uintptr_t retaddr)
 {
-    hwaddr physical;
-    int prot;
-    int access_type;
-    int ret = 0;
-
-    /* data access */
-    access_type = ACCESS_INT;
-    ret = get_physical_address(env, &physical, &prot, address, rw, access_type,
-                               cpu_mmu_index(env, false));
-    if (ret != TLBRET_MATCH) {
-        raise_mmu_exception(env, address, rw, ret);
-        return -1LL;
-    } else {
-        return physical;
-    }
+    /* Use the same TLB and exception path as the subsequent linked load. */
+    probe_access(env, address, 0, access, mmu_idx, retaddr);
+    return tlb_entry(env, mmu_idx, address)->paddr |
+           (address & ~TARGET_PAGE_MASK);
 }
 
 #if 0
