@@ -75,6 +75,80 @@ static void test_mips_stop_at_branch(void)
     OK(uc_close(uc));
 }
 
+static bool observe_data_tlb_fill(uc_engine *uc, uint64_t address,
+                                  uc_mem_type type, uc_tlb_entry *entry,
+                                  void *user_data)
+{
+    uint32_t *observed_pc = user_data;
+    TEST_CHECK(type == UC_MEM_WRITE);
+    OK(uc_reg_read(uc, UC_MIPS_REG_PC, observed_pc));
+    entry->paddr = address;
+    entry->perms = UC_PROT_READ | UC_PROT_WRITE;
+    return true;
+}
+
+static void test_mips_store_in_delay_slot(void)
+{
+    const char code[] =
+        "\x14\x80\x00\x04" // bnez  $a0, taken
+        "\xac\xa6\x00\x00" // sw    $a2, 0($a1)
+        "\x10\x00\x00\x05" // b     finish
+        "\x24\x02\x00\x29" // addiu $v0, $zero, 41
+        "\x00\x00\x00\x00" // nop
+        "\x10\x00\x00\x02" // taken: b finish
+        "\x24\x02\x00\x49" // addiu $v0, $zero, 73
+        "\x00\x00\x00\x00"; // nop
+    const uint32_t data = 0x20000000, value = 0x55555555;
+
+    for (uint32_t taken = 0; taken < 2; ++taken) {
+        uc_engine *uc;
+        uc_hook hook;
+        uint32_t result = 0, stored = 0, observed_pc = 0;
+        uc_common_setup(&uc, UC_ARCH_MIPS, UC_MODE_MIPS32 | UC_MODE_BIG_ENDIAN,
+                        code, sizeof(code) - 1);
+        OK(uc_ctl_tlb_mode(uc, UC_TLB_VIRTUAL));
+        OK(uc_mem_map(uc, data, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A0, &taken));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A1, &data));
+        OK(uc_reg_write(uc, UC_MIPS_REG_A2, &value));
+        if (taken) {
+            OK(uc_hook_add(uc, &hook, UC_HOOK_TLB_FILL, observe_data_tlb_fill,
+                           &observed_pc, data + 0x1000, data + 0x1fff));
+        }
+
+        // The first access to the data page fills the TLB in the delay slot.
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 16));
+        OK(uc_reg_read(uc, UC_MIPS_REG_V0, &result));
+        OK(uc_mem_read(uc, data, &stored, sizeof(stored)));
+        TEST_CHECK(result == (taken ? 73u : 41u));
+        TEST_CHECK(stored == value);
+        TEST_CHECK(observed_pc == 0);
+        OK(uc_close(uc));
+    }
+}
+
+static void test_mips_tlb_callback_sees_store_pc(void)
+{
+    const char code[] =
+        "\x24\x02\x00\x07"  // addiu $v0, $zero, 7
+        "\xac\xa2\x00\x00"; // sw    $v0, 0($a1)
+    const uint32_t data = 0x20000000;
+    uint32_t observed_pc = 0;
+    uc_hook hook;
+    uc_engine *uc;
+
+    uc_common_setup(&uc, UC_ARCH_MIPS, UC_MODE_MIPS32 | UC_MODE_BIG_ENDIAN,
+                    code, sizeof(code) - 1);
+    OK(uc_ctl_tlb_mode(uc, UC_TLB_VIRTUAL));
+    OK(uc_mem_map(uc, data, 0x1000, UC_PROT_READ | UC_PROT_WRITE));
+    OK(uc_reg_write(uc, UC_MIPS_REG_A1, &data));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_TLB_FILL, observe_data_tlb_fill,
+                   &observed_pc, data, data + 0xfff));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+    TEST_CHECK(observed_pc == code_start + 4);
+    OK(uc_close(uc));
+}
+
 static void test_mips_stop_at_delay_slot(void)
 {
     uc_engine *uc;
@@ -1215,6 +1289,8 @@ static void test_mips_r6_fp_unaligned_memory(void)
 }
 
 TEST_LIST = {
+    {"test_mips_store_in_delay_slot", test_mips_store_in_delay_slot},
+    {"test_mips_tlb_callback_sees_store_pc", test_mips_tlb_callback_sees_store_pc},
     {"test_mips_fp_memory_alignment", test_mips_fp_memory_alignment},
     {"test_mips_r6_fp_unaligned_memory", test_mips_r6_fp_unaligned_memory},
     {"test_micromips_multiple_words", test_micromips_multiple_words},
