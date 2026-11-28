@@ -67,8 +67,6 @@ bool unicorn_fill_tlb(CPUState *cs, vaddr address, int size,
     struct hook *hook;
     HOOK_FOREACH_VAR_DECLARE;
 
-    cpu_restore_state(cs, retaddr, false);
-
     HOOK_FOREACH(uc, hook, UC_HOOK_TLB_FILL) {
         if (hook->to_delete) {
             continue;
@@ -76,7 +74,13 @@ bool unicorn_fill_tlb(CPUState *cs, vaddr address, int size,
         if (!HOOK_BOUND_CHECK(hook, address)) {
             continue;
         }
-        handled = true;
+        /* Only a matching callback needs the current guest PC. A plain fill
+         * continues in the same translation block with its live CPU state.
+         */
+        if (!handled) {
+            cpu_restore_state(cs, retaddr, false);
+            handled = true;
+        }
         JIT_CALLBACK_GUARD_VAR(ret, ((uc_cb_tlbevent_t)hook->callback)(uc, address & TARGET_PAGE_MASK, rw_to_mem_type(rw), &e, hook->user_data));
         if (ret) {
             break;
